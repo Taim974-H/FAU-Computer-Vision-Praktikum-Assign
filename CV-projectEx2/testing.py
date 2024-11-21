@@ -4,6 +4,7 @@ import rawpy
 from scipy.ndimage import convolve
 import os
 import cv2
+from PIL import Image, ImageDraw, ImageFont
 
 def load_data(path, filenames):
     raw_images = []
@@ -28,26 +29,37 @@ def load_data(path, filenames):
 
     return raw_images  # Return the list of images
 
+
+
 def demosaic(raw_img):
     # Padding to handle edge cases
     padded_img = np.pad(raw_img, pad_width=1, mode='symmetric')
     height, width = padded_img.shape
 
-    # Initialize the reconstructed image with the same dimensions as the original
+    # Initialize the reconstructed image
     reconstructed_img = np.zeros((raw_img.shape[0], raw_img.shape[1], 3))
 
-    # Create Bayer masks
+    # Create Bayer masks (adjust the pattern if needed)
     red_mask = np.zeros_like(padded_img)
     green_mask = np.zeros_like(padded_img)
     blue_mask = np.zeros_like(padded_img)
 
-    # Create Bayer masks for RGGB pattern
+    # for i in range(height):
+    #     for j in range(width):
+    #         if i % 2 == 0 and j % 2 == 0:  # RGGB pattern
+    #             red_mask[i, j] = 1
+    #         elif i % 2 == 1 and j % 2 == 1:
+    #             blue_mask[i, j] = 1
+    #         else:
+    #             green_mask[i, j] = 1
+
+    # Create Bayer masks for BGGR pattern
     for i in range(height):
         for j in range(width):
-            if i % 2 == 0 and j % 2 == 0:  # Top-left (Red)
-                red_mask[i, j] = 1
-            elif i % 2 == 1 and j % 2 == 1:  # Bottom-right (Blue)
+            if i % 2 == 0 and j % 2 == 0:  # Top-left (Blue)
                 blue_mask[i, j] = 1
+            elif i % 2 == 1 and j % 2 == 1:  # Bottom-right (Red)
+                red_mask[i, j] = 1
             else:  # Green
                 green_mask[i, j] = 1
 
@@ -56,28 +68,36 @@ def demosaic(raw_img):
     green_channel = padded_img * green_mask
     blue_channel = padded_img * blue_mask
 
-    # Define 3x3 averaging kernel for convolution
-    kernel = np.ones((3,3))
+    # Avoid division by zero during interpolation
+    kernel = np.ones((3, 3))
+    red_interpolated = np.divide(
+        convolve(red_channel, kernel, mode='mirror'),
+        convolve(red_mask, kernel, mode='mirror'),
+        out=np.zeros_like(red_channel, dtype=np.float64),
+        where=convolve(red_mask, kernel, mode='mirror') != 0
+    )
+    green_interpolated = np.divide(
+        convolve(green_channel, kernel, mode='mirror'),
+        convolve(green_mask, kernel, mode='mirror'),
+        out=np.zeros_like(green_channel, dtype=np.float64),
+        where=convolve(green_mask, kernel, mode='mirror') != 0
+    )
+    blue_interpolated = np.divide(
+        convolve(blue_channel, kernel, mode='mirror'),
+        convolve(blue_mask, kernel, mode='mirror'),
+        out=np.zeros_like(blue_channel, dtype=np.float64),
+        where=convolve(blue_mask, kernel, mode='mirror') != 0
+    )
 
-    # Interpolate missing values using convolution
-    # For each channel, fill in missing values by averaging surrounding pixels
+    # Combine channels into the reconstructed image
+    reconstructed_img[:, :, 0] = red_interpolated[1:-1, 1:-1]
+    reconstructed_img[:, :, 1] = green_interpolated[1:-1, 1:-1]
+    reconstructed_img[:, :, 2] = blue_interpolated[1:-1, 1:-1]
 
-    # Red channel interpolation
-    red_interpolated = convolve(red_channel, kernel, mode='mirror') / convolve(red_mask, kernel, mode='mirror')
-    red_interpolated[np.isnan(red_interpolated)] = 0  # Handle divisions by zero
-
-    # Green channel interpolation
-    green_interpolated = convolve(green_channel, kernel, mode='mirror') / convolve(green_mask, kernel, mode='mirror')
-    green_interpolated[np.isnan(green_interpolated)] = 0
-
-    # Blue channel interpolation
-    blue_interpolated = convolve(blue_channel, kernel, mode='mirror') / convolve(blue_mask, kernel, mode='mirror')
-    blue_interpolated[np.isnan(blue_interpolated)] = 0
-
-    # Combine channels into the reconstructed image, removing padding
-    reconstructed_img[:, :, 0] = red_interpolated[1:-1, 1:-1]  # Red
-    reconstructed_img[:, :, 1] = green_interpolated[1:-1, 1:-1]  # Green
-    reconstructed_img[:, :, 2] = blue_interpolated[1:-1, 1:-1]  # Blue
+    # Normalize and convert to uint8
+    reconstructed_img -= reconstructed_img.min()
+    reconstructed_img /= reconstructed_img.max()
+    reconstructed_img = np.clip(reconstructed_img * 255, 0, 255).astype(np.uint8)
 
     return reconstructed_img
 
@@ -166,7 +186,6 @@ def hdr(scaled_exposure, threshold=0.8):
 
     return hdr_image
 
-
 def hdr_combination(raw_images, exposure_times):
     """
     Combine multiple images to produce HDR raw data
@@ -216,6 +235,111 @@ def visualize(plots_output_path,filename,rgb_image,idx):
     print(f"Saved Image {idx + 1} to {output_path}")
 
 
+
+
+def create_hdr_plot_pillow(
+    hdr_img, hdr_rgb_image, normalized_hdr, gamma_corr_img_uint8, white_balanced_img, output_file
+):
+    # Ensure images are in the right format for Pillow
+    hdr_img_pillow = Image.fromarray((hdr_img / hdr_img.max() * 255).astype(np.uint8))  # Convert HDR to grayscale
+    hdr_rgb_pillow = Image.fromarray(hdr_rgb_image.astype(np.uint8))  # Convert RGB to Pillow
+    normalized_hdr_pillow = Image.fromarray(normalized_hdr.astype(np.uint8))  # Grayscale
+    gamma_corr_pillow = Image.fromarray(gamma_corr_img_uint8.astype(np.uint8))  # RGB
+    white_balanced_pillow = Image.fromarray(white_balanced_img.astype(np.uint8))  # RGB
+
+    # Image size and padding
+    img_width, img_height = hdr_img_pillow.size
+    padding = 20
+    grid_width = 3  # 3 columns
+    grid_height = 2  # 2 rows
+
+    # Create a blank canvas for the plot
+    canvas_width = grid_width * img_width + (grid_width + 1) * padding
+    canvas_height = grid_height * img_height + (grid_height + 1) * padding
+    canvas = Image.new("RGB", (canvas_width, canvas_height), (255, 255, 255))  # White background
+
+    # Add Titles
+    titles = [
+        "HDR Raw Image",
+        "Demosaiced HDR RGB",
+        "Normalized / Log Tone Mapped HDR",
+        "Gamma Corrected",
+        "White Balanced",
+    ]
+    images = [
+        hdr_img_pillow,
+        hdr_rgb_pillow,
+        normalized_hdr_pillow,
+        gamma_corr_pillow,
+        white_balanced_pillow,
+    ]
+
+    # Font for titles
+    try:
+        font = ImageFont.truetype("arial.ttf", 20)  # Replace with a valid font path if necessary
+    except IOError:
+        font = ImageFont.load_default()
+
+    # Draw images and titles on the canvas
+    draw = ImageDraw.Draw(canvas)
+    for i, (title, img) in enumerate(zip(titles, images)):
+        col = i % grid_width
+        row = i // grid_width
+        x_offset = padding + col * (img_width + padding)
+        y_offset = padding + row * (img_height + padding)
+
+        # Paste the image
+        canvas.paste(img.resize((img_width, img_height)), (x_offset, y_offset))
+
+        # Add title text
+        text_bbox = draw.textbbox((0, 0), title, font=font)  # Get bounding box for the title
+        text_width = text_bbox[2] - text_bbox[0]  # Width of the title
+        text_x = x_offset + img_width // 2 - text_width // 2  # Centered horizontally
+        text_y = y_offset - 30  # Place title above the image
+        draw.text((text_x, text_y), title, fill="black", font=font)
+
+    canvas.save(output_file)
+    print(f"Plot saved to {output_file}")
+
+# output_range = 4
+# input_intensity = 1/61 · (20·red + 40·green + blue)
+# r, g, b = rgb / input_intensity
+# log_base = bilat_filt(log(input_intensity))
+# log_details = log(input_intensity) - log_base
+# compression = log(output_range) / (max(log_base)-min(log_base))
+# log_offset = -max(log_base) · compression
+# output_intensity = exp(log_base · compression + log_offset + log_detail)
+# rgb = r·output_intensity, g·output_intensity, b·output_intensity
+
+
+def icam06(rgb_image, output_range=4):
+    # Ensure the image is in float format for computations
+    rgb_image = rgb_image.astype(np.float64)
+    # Step 1 
+    red, green, blue = rgb_image[:, :, 0], rgb_image[:, :, 1], rgb_image[:, :, 2]
+    input_intensity = (1 / 61) * (20 * red + 40 * green + blue)
+    # Step 2 
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.divide(red, input_intensity, out=np.zeros_like(red), where=input_intensity > 0)
+        g = np.divide(green, input_intensity, out=np.zeros_like(green), where=input_intensity > 0)
+        b = np.divide(blue, input_intensity, out=np.zeros_like(blue), where=input_intensity > 0)
+    # Step 3 
+    log_input_intensity = np.log(input_intensity + 1e-8)  # Add a small value to prevent log(0)
+    # Step 4
+    log_base = cv2.bilateralFilter(log_input_intensity.astype(np.float32), 9, 50, 50)
+    # Step 5 
+    log_details = log_input_intensity - log_base
+    # Step 6 
+    compression = np.log(output_range) / (np.max(log_base) - np.min(log_base) + 1e-8)
+    log_offset = -np.max(log_base) * compression
+    # Step 7
+    output_intensity = np.exp(log_base * compression + log_offset + log_details) / 1.5
+    # Step 8
+    tone_mapped_image = np.stack([r * output_intensity, g * output_intensity, b * output_intensity], axis=-1)
+    # Clip to [0, 1] range
+    tone_mapped_image = np.clip(tone_mapped_image, 0, 1)
+
+    return tone_mapped_image
 #############################################################
 
 # Main function ------------------------------------------------
@@ -322,43 +446,9 @@ def main():
 
     #############################################################
 
-    # path_6 = r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx2\exercise_2_data\exercise_2_data\06"
-    # filename_6 = [f"0{i}.CR3" for i in range(0,10)]
-    
-    # raw_img_6 = load_data(path_6, filename_6)
-    
-    # # Exposure times
-    # t0 = 1
-    # num_images = len(filename_6)
-    # exposure_times_6 = [t0 * (1 / 2) ** n for n in range(num_images)]
-    
-    # # Normalize exposure
-    # normalized_expo_img = normalize_exposure(raw_img_6, exposure_times_6)
-    
-    # hdr_img = hdr(normalized_expo_img, threshold=0.8) 
-    
-    # # Log tone mapping
-    # log_hdr = np.log(1 + hdr_img)
-    # max_log_hdr = np.max(hdr_img)
-    # normalized_hdr = (log_hdr / max_log_hdr * 255).astype(np.uint8)
-
-    # hdr_rgb_image = demosaic(normalized_hdr) 
-    # gamma_corr_img = gamma_correction(hdr_rgb_image, gamma=0.3)
-    # white_balanced_img = white_balance(gamma_corr_img)
-
-    
-
-    # # Visualize HDR image
-    # plt.figure(figsize=(10, 10))
-    # plt.imshow(white_balanced_img)
-    # plt.title("HDR White Balanced Image")
-    # plt.axis("off")
-    # plt.savefig(os.path.join(plots_output_path, 'hdr_white_balanced_img.png'))
-    # plt.close()
     
     path_6 = r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx2\exercise_2_data\exercise_2_data\06"
     filename_6 = [f"0{i}.CR3" if i < 10 else f"{i}.CR3" for i in range(0, 11)]
-    
     
     # Load raw images
     raw_img_6 = load_data(path_6, filename_6)
@@ -375,6 +465,7 @@ def main():
     # Step 2: Perform HDR Combination
     print("Performing HDR combination of raw images...")
     hdr_img = hdr_combination(raw_img_6, exposure_times)
+    # hdr_img = hdr(raw_img_6, threshold=0.8) 
     print("HDR combination complete.")
 
     # Step 3: Demosaic the HDR Raw Image
@@ -404,6 +495,12 @@ def main():
     white_balanced_img = white_balance(gamma_corr_img)
     print("White balance applied.")
 
+
+    print("Icam06 Tone Mapping...")
+    icam06_tone_mapped_img = icam06(white_balanced_img, output_range=4)
+    print("Icam06 Tone Mapping complete.")
+
+
     # Step 8: Plotting HDR Processing Steps
     print("Plotting HDR processing steps...")
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
@@ -418,24 +515,29 @@ def main():
     axes[0, 1].set_title('Demosaiced HDR RGB')
     axes[0, 1].axis('off')
 
-    # Log Tone Mapped
-    axes[0, 2].imshow((log_hdr / np.max(log_hdr) * 255).astype(np.uint8))
-    axes[0, 2].set_title('Log Tone Mapped')
-    axes[0, 2].axis('off')
+    # # Log Tone Mapped
+    # axes[0, 2].imshow(log_hdr.astype(np.uint8))
+    # axes[0, 2].set_title('Log Tone Mapped')
+    # axes[0, 2].axis('off')
 
     # Normalized HDR
-    axes[1, 0].imshow(normalized_hdr, cmap='gray')
-    axes[1, 0].set_title('Normalized HDR')
-    axes[1, 0].axis('off')
+    axes[0, 2].imshow(normalized_hdr, cmap='gray')
+    axes[0, 2].set_title('Normalized / Log Tone Mapped HDR')
+    axes[0, 2].axis('off')
 
     # Gamma Corrected
-    axes[1, 1].imshow(gamma_corr_img_uint8)
-    axes[1, 1].set_title('Gamma Corrected')
+    axes[1, 0].imshow(gamma_corr_img_uint8)
+    axes[1, 0].set_title('Gamma Corrected')
+    axes[1, 0].axis('off')
+
+    # White Balanced
+    axes[1, 1].imshow(white_balanced_img)
+    axes[1, 1].set_title('White Balanced')
     axes[1, 1].axis('off')
 
     # White Balanced
-    axes[1, 2].imshow(white_balanced_img)
-    axes[1, 2].set_title('White Balanced')
+    axes[1, 2].imshow(icam06_tone_mapped_img)
+    axes[1, 2].set_title('ICAM06 Tone Mapped')
     axes[1, 2].axis('off')
 
     # Save the figure
@@ -445,6 +547,9 @@ def main():
     print(f"Plot saved to {output_file}")
     plt.close()
 
+    output_file = os.path.join(plots_output_path, "hdr_processing_steps_pillow.png")
+    create_hdr_plot_pillow(hdr_img, hdr_rgb_image, normalized_hdr, gamma_corr_img_uint8, white_balanced_img, output_file)
+    print(f"Plot saved to {output_file}")
 
 if __name__ == "__main__":
     main()

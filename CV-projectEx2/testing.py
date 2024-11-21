@@ -42,16 +42,13 @@ def demosaic(raw_img):
     blue_mask = np.zeros_like(padded_img)
 
     # Create Bayer masks for RGGB pattern
-    for i in range(height):   # `i` represents the row index
-        for j in range(width):  # `j` represents the column index
-            if i % 2 == 0 and j % 2 == 1:
-                # Blue channel position in RGGB pattern
+    for i in range(height):
+        for j in range(width):
+            if i % 2 == 0 and j % 2 == 0:  # Top-left (Red)
                 red_mask[i, j] = 1
-            elif i % 2 == 1 and j % 2 == 0:
-                # Red channel position in RGGB pattern
+            elif i % 2 == 1 and j % 2 == 1:  # Bottom-right (Blue)
                 blue_mask[i, j] = 1
-            else:
-                # Green channel position in RGGB pattern
+            else:  # Green
                 green_mask[i, j] = 1
 
     # Separate channels
@@ -96,19 +93,14 @@ def normalize_0_to_1(rgb_img):
     
     return normalized_img
     
-    
 def gamma_correction(rgb_img, gamma = 0.3):
     #Gamma Correction
     #applying gamma correction
-    a = np.percentile(rgb_img, 0.01)
-    b = np.percentile(rgb_img, 99.99)
-    normalized_data = (rgb_img - a) / (b - a)
-    normalized_data[normalized_data < 0] = 0
-    normalized_data[normalized_data > 1] = 1
-    gamma = 0.3
-    normalized_gamma_corrected = normalized_data ** gamma
+    img = normalize_0_to_1(rgb_img)
+    normalized_gamma_corrected = img**gamma
     
     return normalized_gamma_corrected
+    
 
 def avg_pixel_channel(rgb_image):
     avg_red = np.mean(rgb_image[:,:,0])
@@ -174,42 +166,43 @@ def hdr(scaled_exposure, threshold=0.8):
 
     return hdr_image
 
-# def hdr_combination(raw_images, exposure_times):
-#     """
-#     Combine multiple images to produce HDR raw data
-#     """
-#     # Ensure images and exposure times are numpy arrays
-#     raw_images = np.array(raw_images)
-#     exposure_times = np.array(exposure_times)
-    
-#     # Weight function: give more weight to middle-range pixel values
-#     def weight_function(z):
-#         return 1.0 - np.abs(z - 0.5) * 2.0
-    
-#     # Initialize HDR image as zero
-#     hdr_image = np.zeros_like(raw_images[0], dtype=np.float64)
-    
-#     # Combine images with their respective weights
-#     for img, exposure in zip(raw_images, exposure_times):
-#         # Convert raw image to float
-#         img_float = img.astype(np.float64)
-#         # Compute pixel-wise weights
-#         weights = weight_function(img_float / np.max(img_float))
-#         # Accumulate weighted image data
-#         hdr_image += weights * img_float / exposure
-    
-#     return hdr_image
 
-def tone_map_log(hdr_image):
-    # Compute the maximum intensity in the HDR image
-    I_max = np.max(hdr_image)
+def hdr_combination(raw_images, exposure_times):
+    """
+    Combine multiple images to produce HDR raw data
+    """
+    # Ensure images and exposure times are numpy arrays
+    raw_images = np.array(raw_images)
+    exposure_times = np.array(exposure_times)
     
-    # Apply logarithmic tone mapping
-    tone_mapped = np.log(1 + hdr_image) / np.log(1 + I_max)
+    # Weight function: give more weight to middle-range pixel values
+    def weight_function(z):
+        return 1.0 - np.abs(z - 0.5) * 2.0
     
-    # Scale to [0, 255] and convert to uint8
-    tone_mapped = (tone_mapped * 255).astype(np.uint8)
-    return tone_mapped
+    # Initialize HDR image as zero
+    hdr_image = np.zeros_like(raw_images[0], dtype=np.float64)
+    
+    # Combine images with their respective weights
+    for img, exposure in zip(raw_images, exposure_times):
+        # Convert raw image to float
+        img_float = img.astype(np.float64)
+        # Compute pixel-wise weights
+        weights = weight_function(img_float / np.max(img_float))
+        # Accumulate weighted image data
+        hdr_image += weights * img_float / exposure
+    
+    return hdr_image
+
+# def tone_map_log(hdr_image):
+#     # Compute the maximum intensity in the HDR image
+#     I_max = np.max(hdr_image)
+    
+#     # Apply logarithmic tone mapping
+#     tone_mapped = np.log(1 + hdr_image) / np.log(1 + I_max)
+    
+#     # Scale to [0, 255] and convert to uint8
+#     tone_mapped = (tone_mapped * 255).astype(np.uint8)
+#     return tone_mapped
 
 
 def visualize(plots_output_path,filename,rgb_image,idx): 
@@ -364,7 +357,7 @@ def main():
     # plt.close()
     
     path_6 = r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx2\exercise_2_data\exercise_2_data\06"
-    filename_6 = [f"0{i}.CR3" for i in range(0,11)]  # Include 10.CR3
+    filename_6 = [f"0{i}.CR3" if i < 10 else f"{i}.CR3" for i in range(0, 11)]
     
     
     # Load raw images
@@ -373,21 +366,50 @@ def main():
     plots_output_path = r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx2\exercise_2_data\exercise_2_data\plots'
 
     
-    # Exposure times: halving for each subsequent image
+    # Step 1: Calculate Exposure Times
+    print("Calculating exposure times...")
     t0 = 1
     exposure_times = [t0 * (1/2)**n for n in range(len(filename_6))]
-    
-        # Combine images and create HDR raw data
-    hdr_img = hdr_combination(raw_img_6, exposure_times)
+    print(f"Exposure times calculated: {exposure_times}")
 
-    # Demosaic HDR raw image first
+    # Step 2: Perform HDR Combination
+    print("Performing HDR combination of raw images...")
+    hdr_img = hdr_combination(raw_img_6, exposure_times)
+    print("HDR combination complete.")
+
+    # Step 3: Demosaic the HDR Raw Image
+    print("Demosaicing the HDR raw image...")
+    # hdr_rgb_image = cv2.cvtColor(hdr_img.astype(np.uint16), cv2.COLOR_BAYER_RG2RGB)
     hdr_rgb_image = demosaic(hdr_img)
- 
-    # Plot HDR Processing Steps
+    print("Demosaicing complete.")
+
+    # Step 4: Logarithmic Tone Mapping
+    print("Applying logarithmic tone mapping...")
+    log_hdr = np.log(1 + hdr_rgb_image / np.max(hdr_rgb_image))  # Normalized for log mapping
+    print("Logarithmic tone mapping complete.")
+
+    # Step 5: Normalize HDR for Visualization
+    print("Normalizing HDR for visualization...")
+    normalized_hdr = (log_hdr / np.max(log_hdr) * 255).astype(np.uint8)
+    print("Normalization complete.")
+
+    # Step 6: Gamma Correction
+    print("Applying gamma correction...")
+    gamma_corr_img = gamma_correction(normalized_hdr / 255.0, gamma=0.3)
+    gamma_corr_img_uint8 = (gamma_corr_img * 255).astype(np.uint8)  # Convert back to 8-bit
+    print("Gamma correction complete.")
+
+    # Step 7: White Balance
+    print("Applying white balance...")
+    white_balanced_img = white_balance(gamma_corr_img)
+    print("White balance applied.")
+
+    # Step 8: Plotting HDR Processing Steps
+    print("Plotting HDR processing steps...")
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
-    # HDR Raw Image (first image before processing)
-    axes[0, 0].imshow(hdr_img)
+    # HDR Raw Image (Before Processing)
+    axes[0, 0].imshow(hdr_img, cmap='gray')
     axes[0, 0].set_title('HDR Raw Image')
     axes[0, 0].axis('off')
 
@@ -396,33 +418,33 @@ def main():
     axes[0, 1].set_title('Demosaiced HDR RGB')
     axes[0, 1].axis('off')
 
-    # Log HDR Image
-    log_hdr = np.log(1 + hdr_rgb_image)
+    # Log Tone Mapped
     axes[0, 2].imshow((log_hdr / np.max(log_hdr) * 255).astype(np.uint8))
     axes[0, 2].set_title('Log Tone Mapped')
     axes[0, 2].axis('off')
 
     # Normalized HDR
-    normalized_hdr = (log_hdr / np.max(log_hdr) * 255).astype(np.uint8)
-    axes[1, 0].imshow(normalized_hdr)
+    axes[1, 0].imshow(normalized_hdr, cmap='gray')
     axes[1, 0].set_title('Normalized HDR')
     axes[1, 0].axis('off')
 
-    # Gamma Correction
-    gamma_corr_img = gamma_correction(normalized_hdr/255.0, gamma=0.3)
-    axes[1, 1].imshow((gamma_corr_img * 255).astype(np.uint8))
+    # Gamma Corrected
+    axes[1, 1].imshow(gamma_corr_img_uint8)
     axes[1, 1].set_title('Gamma Corrected')
     axes[1, 1].axis('off')
 
-    # White Balance
-    white_balanced_img = white_balance(gamma_corr_img)
+    # White Balanced
     axes[1, 2].imshow(white_balanced_img)
     axes[1, 2].set_title('White Balanced')
     axes[1, 2].axis('off')
 
+    # Save the figure
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_output_path, 'hdr_processing_steps.png'))
+    output_file = os.path.join(plots_output_path, 'hdr_processing_steps.png')
+    plt.savefig(output_file)
+    print(f"Plot saved to {output_file}")
     plt.close()
+
 
 if __name__ == "__main__":
     main()

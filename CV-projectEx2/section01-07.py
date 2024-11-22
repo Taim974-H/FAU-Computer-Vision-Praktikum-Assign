@@ -328,41 +328,50 @@ def main():
     # Update plots output path to your Windows path
     plots_output_path = r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx2\exercise_2_data\exercise_2_data\plots'
 
+    #############################################################
+
     # Section 2: Demosaicing
+    # Section 3: Improve Luminosity
+    # Section 4: White Balance
+
+    #############################################################
+
+
+    # Demosaicing
     path_2 = r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx2\exercise_2_data\exercise_2_data\03"
     filename_2 = ["IMG_4782.CR3"]
     raw_img_2 = load_data(path_2, filename_2)
     
     # Demosaic IMG_4782
     reconstructed_img = demosaic(raw_img_2[0])
+
+    # Improve Luminosity
+    normalized_img = normalize_0_to_1(reconstructed_img)
+    luminosity_corr_img = gamma_correction(normalized_img, gamma=0.3)
+
+    # White Balance
+    balanced_img = white_balance(luminosity_corr_img)
     
     # Visualize reconstructed image
     plt.figure(figsize=(10, 10))
     plt.imshow(reconstructed_img.astype(np.uint8))
     plt.title("Reconstructed RGB Image via Interpolation")
     plt.colorbar()
-    plt.savefig(os.path.join(plots_output_path, 'reconstructed_img.png'))
+    plt.savefig(os.path.join(plots_output_path, 'Bird_Demosaic_reconstructed_img.png'))
     plt.close()
 
-    # Section 3: Improve Luminosity
-    normalized_img = normalize_0_to_1(reconstructed_img)
-    luminosity_corr_img = gamma_correction(normalized_img, gamma=0.3)
-    
     plt.figure(figsize=(8, 8))
     plt.imshow(luminosity_corr_img)
     plt.title("Gamma Corrected Image")
     plt.axis("off")
-    plt.savefig(os.path.join(plots_output_path, 'Gamma_Corrected_Image.png'))
-    plt.close()
-
-    # Section 4: White Balance
-    balanced_img = white_balance(luminosity_corr_img)
+    plt.savefig(os.path.join(plots_output_path, 'Bird_Gamma_Corrected_Image.png'))
+    plt.close()    
     
     plt.figure(figsize=(8, 8))
     plt.imshow(balanced_img)
     plt.title("White Balanced Image")
     plt.axis("off")
-    plt.savefig(os.path.join(plots_output_path, 'white_balanced_Image_display.png'))
+    plt.savefig(os.path.join(plots_output_path, 'Bird_White_Balanced_Image.png'))
     plt.close()
 
     #############################################################

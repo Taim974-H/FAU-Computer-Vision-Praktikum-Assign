@@ -1,8 +1,7 @@
 import rawpy
 import numpy as np
 import matplotlib.pyplot as plt
-import cv2
-import os
+import cv2 
 
 class RawProcessor:
     def __init__(self):
@@ -108,7 +107,6 @@ class RawProcessor:
             return None
         
 
-# Main execution block
 if __name__ == "__main__":
     raw = RawProcessor() 
     input_path = r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx2\exercise_2_data\exercise_2_data\03\IMG_4782.CR3' 

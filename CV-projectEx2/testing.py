@@ -19,8 +19,12 @@ def load_data(path, filenames):
             continue
     return raw_images
 
+#############################################################
 
 # Demosaicing ------------------------------------------------
+
+#############################################################
+
 
 def demosaic(raw_img):
     # Padding to handle edge cases
@@ -86,6 +90,11 @@ def demosaic(raw_img):
 
     return reconstructed_img
 
+#############################################################
+
+# Gamme Correction ------------------------------------------
+
+#############################################################
 
 def normalize_0_to_1(rgb_img):
     #Normalize the data
@@ -105,6 +114,13 @@ def gamma_correction(rgb_img, gamma = 0.3):
     normalized_gamma_corrected = img**gamma
     
     return normalized_gamma_corrected
+
+
+#############################################################
+
+# White balancing ------------------------------------------
+
+#############################################################
     
     
 def avg_pixel_channel(rgb_image):
@@ -138,6 +154,12 @@ def white_balance(rgb_image):
 
     return white_balanced_img_display
 
+#############################################################
+
+# HDR Combination ------------------------------------------
+
+#############################################################
+
 
 def hdr_combination(raw_images, exposure_times):
     """
@@ -165,14 +187,20 @@ def hdr_combination(raw_images, exposure_times):
     
     return hdr_image
 
+#############################################################
+
+# Log Tone Mapping ------------------------------------------
+
+#############################################################
+
 def tone_map_log(hdr_image):
-    # Ensure the image is in float32 for logarithmic calculations
-    hdr_image = hdr_image.astype(np.float32) / 255.0  # Normalize to [0, 1]
+    
+    # normalize to [0, 1]
+    hdr_image = hdr_image.astype(np.float32) / 255.0  
+ 
+    log_hdr = np.log1p(hdr_image)  
 
-    # Apply logarithmic tone mapping
-    log_hdr = np.log1p(hdr_image)  # Use log(1 + x) to avoid log(0) issues
-
-    # Normalize log output to [0, 255]
+    # normalize log output to [0, 255]
     log_hdr = (log_hdr / np.max(log_hdr)) * 255.0
 
     # # Convert back to uint8 for display/output
@@ -180,19 +208,47 @@ def tone_map_log(hdr_image):
 
     return log_hdr
 
+#############################################################
+
+# ICAM06 ----------------------------------------------------
+
+#############################################################
 
 
-def visualize(plots_output_path,filename,rgb_image,idx): 
-    # Save the reconstructed image
-    output_path = os.path.join(plots_output_path, f"{filename}_{idx + 1}.png")
-    plt.imshow(rgb_image.astype(np.uint8))
-    plt.axis('off')  # Hide axes for cleaner output
-    plt.title(f"{filename} {idx + 1}")
-    plt.savefig(output_path, bbox_inches='tight', pad_inches=0)  # Save the plot as an image
-    plt.close()  # Close the figure to free memory
-    print(f"Saved Image {idx + 1} to {output_path}")
+def icam06(rgb_image, output_range=4):
+    # Ensure the image is in float format for computations
+    rgb_image = rgb_image.astype(np.float64)
+    # Step 1 
+    red, green, blue = rgb_image[:, :, 0], rgb_image[:, :, 1], rgb_image[:, :, 2]
+    input_intensity = (1 / 61) * (20 * red + 40 * green + blue)
+    # Step 2 
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.divide(red, input_intensity, out=np.zeros_like(red), where=input_intensity > 0)
+        g = np.divide(green, input_intensity, out=np.zeros_like(green), where=input_intensity > 0)
+        b = np.divide(blue, input_intensity, out=np.zeros_like(blue), where=input_intensity > 0)
+    # Step 3 
+    log_input_intensity = np.log(input_intensity + 1e-8)  # Add a small value to prevent log(0)
+    # Step 4
+    log_base = cv2.bilateralFilter(log_input_intensity.astype(np.float32), 4, 50, 50)
+    # Step 5 
+    log_details = log_input_intensity - log_base
+    # Step 6 
+    compression = np.log(output_range) / (np.max(log_base) - np.min(log_base) + 1e-8)
+    log_offset = -np.max(log_base) * compression
+    # Step 7
+    output_intensity = np.exp(log_base * compression + log_offset + log_details) / 1.5
+    # Step 8
+    tone_mapped_image = np.stack([r * output_intensity, g * output_intensity, b * output_intensity], axis=-1)
+    # Clip to [0, 1] range
+    tone_mapped_image = np.clip(tone_mapped_image, 0, 1)
 
+    return tone_mapped_image
 
+#############################################################
+
+# Using Pillow Lib for HDR Process Plots --------------------
+
+#############################################################
 
 
 def create_hdr_plot_pillow(
@@ -260,40 +316,7 @@ def create_hdr_plot_pillow(
     print(f"Plot saved to {output_file}")
 
 
-def icam06(rgb_image, output_range=4):
-    # Ensure the image is in float format for computations
-    rgb_image = rgb_image.astype(np.float64)
-    # Step 1 
-    red, green, blue = rgb_image[:, :, 0], rgb_image[:, :, 1], rgb_image[:, :, 2]
-    input_intensity = (1 / 61) * (20 * red + 40 * green + blue)
-    # Step 2 
-    with np.errstate(divide='ignore', invalid='ignore'):
-        r = np.divide(red, input_intensity, out=np.zeros_like(red), where=input_intensity > 0)
-        g = np.divide(green, input_intensity, out=np.zeros_like(green), where=input_intensity > 0)
-        b = np.divide(blue, input_intensity, out=np.zeros_like(blue), where=input_intensity > 0)
-    # Step 3 
-    log_input_intensity = np.log(input_intensity + 1e-8)  # Add a small value to prevent log(0)
-    # Step 4
-    log_base = cv2.bilateralFilter(log_input_intensity.astype(np.float32), 4, 50, 50)
-    # Step 5 
-    log_details = log_input_intensity - log_base
-    # Step 6 
-    compression = np.log(output_range) / (np.max(log_base) - np.min(log_base) + 1e-8)
-    log_offset = -np.max(log_base) * compression
-    # Step 7
-    output_intensity = np.exp(log_base * compression + log_offset + log_details) / 1.5
-    # Step 8
-    tone_mapped_image = np.stack([r * output_intensity, g * output_intensity, b * output_intensity], axis=-1)
-    # Clip to [0, 1] range
-    tone_mapped_image = np.clip(tone_mapped_image, 0, 1)
 
-    return tone_mapped_image
-
-def enhance_saturation(image, factor=1.2):
-    hsv_image = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float64)
-    hsv_image[:, :, 1] *= factor
-    hsv_image[:, :, 1] = np.clip(hsv_image[:, :, 1], 0, 255)
-    return cv2.cvtColor(hsv_image.astype(np.uint8), cv2.COLOR_HSV2RGB) / 255
 
 #############################################################
 
@@ -398,6 +421,7 @@ def main():
     #############################################################
 
     # Section 6: HDR Implementation
+    # Section 7: ICAM06 Implementation
 
     #############################################################
 
@@ -471,7 +495,7 @@ def main():
         ('Normalized HDR after Log Tone Mapped', normalized_hdr, None),
         ('Gamma Corrected', gamma_corr_img_uint8, None),
         ('White Balanced', white_balanced_img, None),
-        ('ICAM06 Tone Mapped', enhance_saturation(icam06_tone_mapped_img, factor=1.5), None)
+        ('ICAM06 Tone Mapped', icam06_tone_mapped_img, None)
     ]
 
     # Directory to save individual plots

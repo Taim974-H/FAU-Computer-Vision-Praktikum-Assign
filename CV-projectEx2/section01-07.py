@@ -111,9 +111,51 @@ def gamma_correction(rgb_img, gamma = 0.3):
     #Gamma Correction
     #applying gamma correction
     img = normalize_0_to_1(rgb_img)
-    normalized_gamma_corrected = img**gamma
-    
-    return normalized_gamma_corrected
+    # y= x^(1/gamma)
+    return img**gamma
+
+
+def logistic_correction(img, k=10, x0=0.5):
+    # k : Steepness of the curve (default 10)
+    # x0 : Midpoint of the curve (default 0.5)    
+    return 1 / (1 + np.exp(-k * (img - x0)))
+
+
+def visualize_correction_curves(normalized_img):
+    # Extract a single channel and sample data
+    x = normalized_img[:, :, 1].ravel()[::100]  # Reduce data size
+
+    # Create a figure with subplots
+    plt.figure(figsize=(15, 5))
+
+    # Gamma correction curves
+    plt.subplot(1, 2, 1)
+    for gamma in [0.3, 2.0]:
+        y = gamma_correction(x, gamma)
+        plt.plot(x, y, label=f'Gamma = {gamma}')
+    plt.title('Gamma Correction Curves')
+    plt.xlabel('Input Value')
+    plt.ylabel('Output Value')
+    plt.legend(loc='upper left')  # Fix legend position
+    plt.grid(True)
+    plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Identity')
+
+    # Logistic correction curves
+    plt.subplot(1, 2, 2)
+    for k in [5, 20]:
+        y = logistic_correction(x, k)
+        plt.plot(x, y, label=f'k = {k}')
+    plt.title('Logistic Correction Curves')
+    plt.xlabel('Input Value')
+    plt.ylabel('Output Value')
+    plt.legend(loc='upper left')  # Fix legend position
+    plt.grid(True)
+    plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Identity')
+
+    plt.tight_layout()
+    plt.show()
+
+
 
 
 #############################################################
@@ -171,11 +213,17 @@ def hdr_combination(raw_images, exposure_times):
     
     # Weight function: give more weight to middle-range pixel values
     def weight_function(z):
+        # return np.where(z <= 0.5, z, 1 - z)
         return 1.0 - np.abs(z - 0.5) * 2.0
+    # hueristic approach to Debevec and Malik's approach for HDR radiance map estimation
+    
+    # log_exposure_times = np.log(exposure_times)
+    # weight_sum = np.zeros_like(raw_images[0], dtype=np.float64)
     
     # Initialize HDR image as zero
     hdr_image = np.zeros_like(raw_images[0], dtype=np.float64)
     
+
     # Combine images with their respective weights
     for img, exposure in zip(raw_images, exposure_times):
         # Convert raw image to float
@@ -184,6 +232,20 @@ def hdr_combination(raw_images, exposure_times):
         weights = weight_function(img_float / np.max(img_float))
         # Accumulate weighted image data
         hdr_image += weights * img_float / exposure
+
+    
+    # for img, log_exposure in zip(raw_images, log_exposure_times):
+    #     # Convert raw image to float and normalize to [0, 1]
+    #     img_float = img.astype(np.float64) / np.max(img)
+    #     # Compute pixel-wise weights
+    #     weights = weight_function(img_float)
+    #     # Accumulate weighted log radiance values
+    #     hdr_image += weights * (np.log(img_float + 1e-6) - log_exposure)
+    #     # Accumulate weights
+    #     weight_sum += weights
+    
+    # # Normalize by the total weight to handle division by zero
+    # hdr_image = np.exp(hdr_image / (weight_sum + 1e-6))
     
     return hdr_image
 
@@ -348,6 +410,15 @@ def main():
     # Improve Luminosity
     normalized_img = normalize_0_to_1(reconstructed_img)
     luminosity_corr_img = gamma_correction(normalized_img, gamma=0.3)
+
+    # luminosity_corr_img = logistic_correction(normalized_img, k=3, x0=0.4)
+    # the k value can be adjusted to change the steepness of the curve
+    # which means the contrast of the image can be adjusted,
+    # more the k, more the contrast 
+    # more the x0, more the mid point of the curve and more the contrast
+
+    # visualize_correction_curves(normalized_img)
+    
 
     # White Balance
     balanced_img = white_balance(luminosity_corr_img)

@@ -1,4 +1,8 @@
 package-lock.json
 package.json
 sandbox.py
-cvProject/
+cvProject
+data
+archive
+__pycache__
+*.zip

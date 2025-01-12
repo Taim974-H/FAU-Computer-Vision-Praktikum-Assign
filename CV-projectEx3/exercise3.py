@@ -131,11 +131,23 @@ def assignments(descriptors, clusters):
         clusters: KxD cluster matrix 100x64
     returns: TxK assignment matrix
     """
-    distances = np.linalg.norm(descriptors[:, np.newaxis,:] - clusters[np.newaxis, : , :], axis=2)
+    distances = np.linalg.norm(descriptors[:, np.newaxis,:] - clusters[np.newaxis, : , :], axis=2) 
+    # compute the distance between each descriptor and each cluster center
+    #  shape (T, K), where T is the number of descriptors and K is the number of clusters
+
     nearest_cluster = np.argmin(distances, axis=1) # axis=1 : operate along the rows
     # create hard assignment
     assignment = np.zeros( (len(descriptors), len(clusters)) )
-    assignment[np.arange(len(descriptors)), nearest_cluster] = 1 #instead of for loop
+    assignment[np.arange(len(descriptors)), nearest_cluster] = 1 
+    # sets the element at row i and column nearest_cluster[i] to 1 
+    # and the rest of the elements in the row to 0
+
+    # a = np.zeros((descriptors.shape[0], clusters.shape[0]), dtype=np.float32)
+    # bf = cv2.BFMatcher(cv2.NORM_L2)
+    # nearestCentroidIndex = bf.knnMatch(descriptors, clusters, k=1) 
+    # for i, m in enumerate(nearestCentroidIndex):
+    #     a[i, m[0].trainIdx] = 1 # the index of the nearest cluster center is set to 1
+
     return assignment
 
 
@@ -155,6 +167,7 @@ def vlad(files, mus, powernorm, gmp=False, gamma=1000):
     for f in tqdm(files):
         with gzip.open(f, 'rb') as ff:
             desc = cPickle.load(ff, encoding='latin1')
+
         a = assignments(desc, mus) # a: TxK
         
         T,D = desc.shape
@@ -162,7 +175,8 @@ def vlad(files, mus, powernorm, gmp=False, gamma=1000):
         for k in range(mus.shape[0]):
             j = np.where(a[:, k] == 1)[0]
             if len(j) > 0:  # Ensure there are descriptors assigned
-                residuals = desc[j] - mus[k]  # Compute residuals for cluster k
+                residuals = desc[j] - mus[k]  # Compute residuals for cluster k, 
+                # residuals mean the difference between the descriptor and the cluster center
                 f_enc[k, :] = np.sum(residuals, axis=0)  # Aggregate residuals
                 
         f_enc = f_enc.flatten()
@@ -198,6 +212,11 @@ def esvm(encs_test, encs_train, C=1000):
 
     def loop(arg):
         i, encs_test, encs_train, C = arg
+        # i is the index of the test descriptor
+        # encs_test is the test encoding matrix
+        # encs_train is the training encoding matrix
+        # C is the regularization parameter - this is the parameter that controls the trade-off between the margin and the classification error
+        
         test_descriptor = encs_test[i]
         x = np.vstack([encs_train, test_descriptor[np.newaxis, :]])  # stack vertically and add a new dimension
         y = np.hstack([np.full(len(encs_train), -1), 1])  # creating labels for training data
@@ -267,8 +286,8 @@ def main():
     # args = parser.parse_args()
     # Hardcoded arguments
     args = argparse.Namespace(
-        in_train=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\icdar17_local_features\icdar17_local_features\train',
-        labels_train=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\icdar17_local_features\icdar17_local_features\icdar17_labels_train.txt',
+        in_train=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features\train',
+        labels_train=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features\icdar17_labels_train.txt',
         suffix='_SIFT_patch_pr.pkl.gz',
         overwrite=False,
         powernorm=False,
@@ -306,8 +325,8 @@ def main():
 
 #------------------------------------------------------------------------------------------------
     parameters = argparse.Namespace(
-        in_test=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\icdar17_local_features\icdar17_local_features\test',
-        labels_test=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\icdar17_local_features\icdar17_local_features\icdar17_labels_test.txt',
+        in_test=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features\test',
+        labels_test=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features\icdar17_labels_test.txt',
         suffix='_SIFT_patch_pr.pkl.gz',
         overwrite=False,
         powernorm=False,

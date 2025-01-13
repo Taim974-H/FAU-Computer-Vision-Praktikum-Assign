@@ -68,7 +68,7 @@ class FaceRecognizer:
         
         # Get grayscale embedding
         gray_face = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
-        gray_face = cv2.cvtColor(gray_face, cv2.COLOR_GRAY2BGR)
+        gray_face = cv2.cvtColor(gray_face, cv2.COLOR_GRAY2BGR) # we do this to convert the grayscale image to a 3-channel image, otherwise the model will throw an error
         gray_embedding = self.facenet.predict(gray_face)
         gray_embedding = gray_embedding / np.linalg.norm(gray_embedding)
         
@@ -78,6 +78,8 @@ class FaceRecognizer:
         
         return color_embedding, gray_embedding, label
 
+    # Reference links:
+    # https://machinelearningmastery.com/tutorial-to-implement-k-nearest-neighbors-in-python-from-scratch/
     def predict(self, face):
         if len(self.labels) == 0:
             return "unknown", 0.0, float('inf')
@@ -99,36 +101,45 @@ class FaceRecognizer:
         combined_distances = 0.6 * color_distances + 0.4 * gray_distances
 
         # Find k nearest neighbors
-        k = min(self.num_neighbours, len(self.labels) // 2)
-        nearest_indices = np.argpartition(combined_distances, k)[:k]
-        nearest_distances = combined_distances[nearest_indices]
-        nearest_labels = [self.labels[i * 2] for i in nearest_indices]
+        num_samples = len(self.labels) // 2
+        k = min(self.num_neighbours, num_samples) # Ensure k is not greater than number of samples)
+        sorted_indices = np.argsort(combined_distances)[:k] 
+        nearest_distances = combined_distances[sorted_indices] 
+        #since each embedding is stored twice (color and grayscale), we use i*2 to access the correct label for the corresponding embedding
+        nearest_labels = [self.labels[i * 2] for i in sorted_indices] 
 
-        # Calculate probability and predicted label
+        # majority vote  among k neighbours - calculate probability and predicted label
         unique_labels, counts = np.unique(nearest_labels, return_counts=True)
         max_count_idx = np.argmax(counts)
         predicted_label = unique_labels[max_count_idx]
-        probability = counts[max_count_idx] / k
+        probability = counts[max_count_idx] / k # proportion of k neighbors that have the predicted label
 
         # Calculate minimum and average distance to predicted class
-        class_distances = nearest_distances[np.array(nearest_labels) == predicted_label]
+        class_distances = nearest_distances[np.array(nearest_labels) == predicted_label] # only the distances of the neighbors that belong to the predicted label
         min_class_distance = np.min(class_distances) if len(class_distances) > 0 else float('inf')
         avg_class_distance = np.mean(class_distances) if len(class_distances) > 0 else float('inf')
 
+
+        # Mark a prediction as "unknown" if:
+        # Distance variance (distance spread) among neighbors is too high.
+        # Average or minimum distance exceeds thresholds.
+        # Probability of the prediction is too low.
+        # There’s insufficient separation between the top class and the second-best class.
+
         # More stringent unknown detection
         is_unknown = False
-        
-        # Check if distances are too spread out (indicates uncertainty)
-        distance_spread = np.std(class_distances) if len(class_distances) > 1 else float('inf')
-        if distance_spread > 0.15:  # High variance in distances suggests uncertainty
-            is_unknown = True
-            
+
         # Check if average distance is too high
         if avg_class_distance > self.max_distance * 0.8:  # Using 80% of max_distance for average
             is_unknown = True
             
         # Check if minimum distance is too high
         if min_class_distance > self.max_distance:
+            is_unknown = True
+        
+        # Check if distances are too spread out (indicates uncertainty)
+        distance_spread = np.std(class_distances) if len(class_distances) > 1 else float('inf')
+        if distance_spread > 0.15:  # High variance in distances suggests uncertainty
             is_unknown = True
             
         # Check if probability is too low

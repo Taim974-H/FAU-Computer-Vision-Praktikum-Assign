@@ -94,6 +94,9 @@ class FaceRecognizer:
         gray_embedding = gray_embedding / np.linalg.norm(gray_embedding)
 
         # Calculate distances using cosine similarity
+        # cosine similarity is calculated as the dot product of two vectors divided by the product of their magnitudes.
+        # since the embeddings are already normalized (divided by their L2 norm), the dot product directly gives the cosine similarity.
+        # so, subtracting that from 1 gives the cosine distance.
         color_distances = 1 - np.dot(self.embeddings[::2], color_embedding.T).flatten()
         gray_distances = 1 - np.dot(self.embeddings[1::2], gray_embedding.T).flatten()
         

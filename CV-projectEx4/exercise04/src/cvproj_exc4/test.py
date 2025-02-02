@@ -144,7 +144,7 @@ def arguments():
     parser.add_argument(
         "--video",
         type=str,
-        default=Config.test_data.joinpath("Alan_Ball", "%04d.jpg"),
+        default=Config.test_data.joinpath("Al_Pacino", "%04d.jpg"),
         help="The video capture input. In case of 'none' the default video capture (webcam) is "
         "used. Use a filename(s) to read video data from image file (see VideoCapture "
         "documentation).",

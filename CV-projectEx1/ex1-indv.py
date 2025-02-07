@@ -78,32 +78,36 @@ def fit_plane(p1, p2, p3):
 
     return normal, d
 
-
-def compute_inliers(points, normal, d, threshold):  
+def compute_inliers(points, normal, d, threshold, use_mlesac=False, gamma=2.0):
     """
-    Identifies points that are within a specified distance (threshold) from a plane.
+    Identifies points within a specified distance from a plane.
 
-    Parameters:
-    points (numpy.ndarray): An array of shape (N, 3), where N is the number of points in 3D space. Each row represents a point (x, y, z).
-    normal (numpy.ndarray): A vector of shape (3,) representing the normal to the plane.
-    d (float): The plane offset, calculated as the dot product of the normal vector and a point on the plane.
-    threshold (float): The maximum allowable distance from the plane for a point to be considered an inlier.
-
-
+    Args:
+        points (np.ndarray): Points of shape (N, 3)
+        normal (np.ndarray): Plane normal vector
+        d (float): Plane offset
+        threshold (float): Maximum distance for inliers
+        use_mlesac (bool): Whether to use MLESAC strategy
+        gamma (float): Outlier cost multiplier for MLESAC
 
     Returns:
-    numpy.ndarray: A Boolean array (inliers_mask) of shape (N,), where each element is True if the corresponding point is within the threshold distance from the plane, otherwise False.
-
-    Steps:
-    1. Calculate the magnitude of the normal vector to normalize distances.
-    2. Compute the perpendicular distance of each point to the plane.
-    3. Identify points within the threshold distance and create a mask.
+        tuple: (inliers mask, cost/negative_inliers)
     """
-    n_magnitude = np.linalg.norm(normal)
-    distances = np.abs(np.dot(points, normal) - d) / n_magnitude
-    inliers_mask = distances < threshold
+    distances = np.abs(np.dot(points, normal) - d) / np.linalg.norm(normal)
+    
+    if use_mlesac:
+        # MLESAC: cost based on inlier distances and scaled outlier count
+        inliers_mask = distances < threshold
+        outlier_distances = distances[~inliers_mask]
+        inlier_distances = distances[inliers_mask]
+        # Cost is sum of inlier distances + gamma for outliers
+        cost = np.sum(inlier_distances) + gamma * len(outlier_distances)
 
-    return inliers_mask
+        return inliers_mask, cost
+    else:
+        # Standard RANSAC: return mask and negative inlier count for maximization
+        inliers_mask = distances < threshold
+        return inliers_mask, np.sum(inliers_mask)
 
 def run_ransac(cloud_img, threshold, num_iterations, gamma=2.0, use_mlesac=False):
     """
@@ -127,7 +131,7 @@ def run_ransac(cloud_img, threshold, num_iterations, gamma=2.0, use_mlesac=False
     valid_mask = None
     inliers_list = None
     valid_points = None
-    # best_cost = np.inf if use_mlesac else -np.inf
+    best_cost = np.inf if use_mlesac else -np.inf
 
     if cloud_img.ndim == 3:
         z_component = cloud_img[:, :, 2]
@@ -145,19 +149,19 @@ def run_ransac(cloud_img, threshold, num_iterations, gamma=2.0, use_mlesac=False
         # if normal is None:  # Skip if the plane fitting failed
         #     continue
 
-        inliers_mask = compute_inliers(valid_points, normal, d, threshold)
-        # inliers_mask, cost = compute_inliers(valid_points, normal, d, threshold,use_mlesac=use_mlesac, gamma=gamma)
+        # inliers_mask = compute_inliers(valid_points, normal, d, threshold)
+        inliers_mask, cost = compute_inliers(valid_points, normal, d, threshold,use_mlesac=use_mlesac, gamma=gamma)
             
         inliers_No = np.sum(inliers_mask)
 
 
-        if inliers_No > max_inliers:
+        if (use_mlesac and cost < best_cost) or (not use_mlesac and inliers_No > max_inliers):
             # If current model has more inliers, update the best model
             best_model = {
                 'normal': normal,
                 'd': d
             }
-            # best_cost = cost
+            best_cost = cost
             max_inliers = inliers_No
             inliers_list = np.where(inliers_mask)[0]
 
@@ -193,6 +197,13 @@ def visualize_mask(cloud_img,initial_mask, refined_mask):
     axs[1].imshow(refined_mask, cmap='gray')
     axs[1].set_title("Refined Mask")
 
+    # # 3D visualization of the points classified as floor
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111, projection='3d')
+    # floor_points = cloud_img[initial_mask == 1]
+    # ax.scatter(floor_points[:, 0], floor_points[:, 1], floor_points[:, 2], c='blue', s=1)
+    # plt.title("3D Visualization of Floor Points")
+    # plt.show()
     plt.show()
 
 
@@ -285,12 +296,143 @@ def visualize_box_corners(corners):
     ax.view_init(elev=20, azim=30)  # Set view angle
     plt.show()
 
+    # ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+def preemptive_ransac(cloud_img, num_hypotheses=100, batch_size=100, threshold=0.05, use_mlesac=False, gamma=2.0):
+    """
+    Implements Preemptive RANSAC algorithm.
+    
+    Args:
+    - cloud_img: Input point cloud
+    - num_hypotheses: Total number of initial hypotheses (M)
+    - batch_size: Number of points to evaluate before preemption (B)
+    - threshold: Inlier distance threshold
+    - use_mlesac: Whether to use MLESAC cost function
+    - gamma: Outlier cost multiplier for MLESAC
+    
+    Returns:
+    - Best plane model
+    - Inliers list
+    - Valid points
+    - Valid mask
+    - Inliers mask
+    """
+    def preemption_function(i, M, B):
+        """
+        Calculates number of top hypotheses to retain at iteration i
+        
+        Args:
+        - i: Current iteration
+        - M: Total initial hypotheses
+        - B: Batch size
+        
+        Returns:
+        Number of top hypotheses to retain
+        """
+        return max(1, int(M * (1 - i / (cloud_img.shape[0] / B))))
+
+    # Prepare valid points
+    if cloud_img.ndim == 3:
+        z_component = cloud_img[:, :, 2]
+        valid_mask = z_component != 0
+        valid_points = cloud_img[valid_mask].reshape(-1, 3)
+    else:
+        valid_points = cloud_img
+        valid_mask = np.ones(cloud_img.shape[0], dtype=bool)
+
+    # Generate initial hypotheses
+    hypotheses = []
+    for _ in range(num_hypotheses):
+        indices = np.random.choice(valid_points.shape[0], 3, replace=False)
+        p1, p2, p3 = valid_points[indices]
+        
+        normal, d = fit_plane(p1, p2, p3)
+        if normal is None:
+            continue
+        
+        hypotheses.append((normal, d))
+
+    # Preemptive evaluation
+    for i in range(0, valid_points.shape[0], batch_size):
+        batch = valid_points[i:i+batch_size]
+        
+        # Evaluate hypotheses on current batch
+        hypothesis_scores = []
+        for normal, d in hypotheses:
+            if use_mlesac:
+                _, cost = compute_inliers(batch, normal, d, threshold, use_mlesac=True, gamma=gamma)
+                hypothesis_scores.append(cost)
+            else:
+                inliers_mask, inliers_count = compute_inliers(batch, normal, d, threshold)
+                hypothesis_scores.append(-inliers_count)  # Negative for maximization
+
+        # Sort hypotheses by score
+        sorted_indices = np.argsort(hypothesis_scores)
+        
+        # Retain top hypotheses based on preemption function
+        top_k = preemption_function(i, num_hypotheses, batch_size)
+        hypotheses = [hypotheses[idx] for idx in sorted_indices[:top_k]]
+
+    # Final best hypothesis
+    best_normal, best_d = hypotheses[0]
+    
+    # Compute final inliers
+    inliers_mask, _ = compute_inliers(valid_points, best_normal, best_d, threshold, use_mlesac=use_mlesac, gamma=gamma)
+    
+    best_model = {
+        'normal': best_normal,
+        'd': best_d
+    }
+    
+    return best_model, valid_points[inliers_mask], np.where(inliers_mask)[0], valid_mask, inliers_mask
+
 def main():
 
     x = 2
     file_path = f'CV-projectEx1/data/example{x}kinect.mat'
     data = scipy.io.loadmat(file_path)
     amplitude_img, distance_img, cloud_img = data[f'amplitudes{x}'], data[f'distances{x}'], data[f'cloud{x}']
+
+
+    # Experiment with different M and B values
+    configurations = [
+        (50, 50),   # Conservative: fewer hypotheses, smaller batches
+        (100, 100), # Balanced approach
+        (200, 200)  # Aggressive: more hypotheses, larger batches
+    ]
+
+    plt.figure(figsize=(15, 5))
+    for i, (M, B) in enumerate(configurations, 1):
+        # Run Preemptive RANSAC
+        floor_model, valid_points, floor_inliers, valid_mask, inliers_mask = preemptive_ransac(
+            cloud_img, 
+            num_hypotheses=M, 
+            batch_size=B, 
+            threshold=0.05
+        )
+        
+        # Create and visualize mask
+        initial_mask = create_initial_mask(cloud_img.shape, floor_inliers, valid_mask)
+        refined_mask = refine_mask(initial_mask)
+        
+        plt.subplot(1, 3, i)
+        plt.imshow(refined_mask, cmap='gray')
+        plt.title(f'M={M}, B={B}')
+        plt.axis('off')
+
+    plt.tight_layout()
+    plt.show()
+
+    # Optional: Compute metrics for comparison
+    for M, B in configurations:
+        floor_model, valid_points, floor_inliers, valid_mask, inliers_mask = preemptive_ransac(
+            cloud_img, 
+            num_hypotheses=M, 
+            batch_size=B, 
+            threshold=0.05
+        )
+        print(f"M={M}, B={B}: {len(floor_inliers)} inliers")
+
 
     # Display amplitude and distance images
     display_image(amplitude_img, 'Amplitude Image')
@@ -305,13 +447,17 @@ def main():
     # RANSAC to find the first plane (floor)
     floor_model, valid_points, floor_inliers,valid_mask,inliers_mask = run_ransac(cloud_img, num_iterations=3000, threshold=0.05)
     
-    print(inliers_mask.shape)
-    print(floor_inliers.shape)
-    print(inliers_mask)
+
+    # MLESAC to find the first plane (floor) 
+    floor_model_mlesac, valid_points, floor_inliers_mlesac, valid_mask, inliers_mask_mlesac = run_ransac(cloud_img, num_iterations=3000, threshold=0.05, use_mlesac=True, gamma=2)
+    
+    # Compare inliers
+    print(f"RANSAC floor inliers: {len(floor_inliers)}")
+    print(f"MLESAC floor inliers: {len(floor_inliers_mlesac)}")
    
-    print(f"Best floor model found with {len(floor_inliers)} inliers.")
+    # print(f"Best floor model found with {len(floor_inliers)} inliers.")
     floor_model['normal'] = floor_model['normal'] / np.linalg.norm(floor_model['normal'])
-    # floor_model_mlesac['normal'] /= np.linalg.norm(floor_model_mlesac['normal'])
+    floor_model_mlesac['normal'] /= np.linalg.norm(floor_model_mlesac['normal'])
    
     initial_mask = create_initial_mask(cloud_img.shape, floor_inliers, valid_mask) # floor pixels are set to 1
     refined_mask = refine_mask(initial_mask)
@@ -329,67 +475,54 @@ def main():
     print(f"Non-floor cloud shape: {non_floor_cloud_img.shape}")
 
     # RANSAC to find the second plane (top)
-    top_model, valid_points, top_inliers, valid_top_mask, inliers_mask = run_ransac(non_floor_cloud_img, num_iterations=3000, threshold=0.01)
+    top_model, valid_points, top_inliers, valid_top_mask, inliers_mask = run_ransac(non_floor_cloud_img, num_iterations=3000, threshold=0.05)
     print(f"Best top model found with {len(top_inliers)} inliers.")
     top_model['normal'] = top_model['normal'] / np.linalg.norm(top_model['normal'])
+
+    # Find top plane with MLESAC
+    top_model_mlesac, _, top_inliers_mlesac, _, _ = run_ransac(non_floor_cloud_img, num_iterations=3000, threshold=0.05,use_mlesac=True, gamma=2 )
+    top_model_mlesac['normal'] /= np.linalg.norm(top_model_mlesac['normal'])
+
+    # Compare inliers
+    print(f"RANSAC top plane inliers: {len(top_inliers)}")
+    print(f"MLESAC top plane inliers: {len(top_inliers_mlesac)}")
 
     # RANSAC top plane processing
     initial_top_mask = create_initial_mask(cloud_img.shape, top_inliers, valid_top_mask)
     refined_top_mask = refine_mask(initial_top_mask)
     largest_top_component_mask = find_largest_connected_component(refined_top_mask)
 
+    # MLESAC top plane processing
+    initial_top_mask_mlesac = create_initial_mask(cloud_img.shape, top_inliers_mlesac, valid_top_mask)
+    refined_top_mask_mlesac = refine_mask(initial_top_mask_mlesac)
+    largest_top_component_mask_mlesac = find_largest_connected_component(refined_top_mask_mlesac)
+
+
     #-----------------------------------------------------------------------------------------------
 
-    top_points = cloud_img[largest_top_component_mask]
-    if top_points.shape[0] == 0:
-        print("No points found in the top mask.")
-        return
+    # Visualization comparison
+    fig, axs = plt.subplots(3, 2, figsize=(15, 10))
 
-    # Calculate the distance between the two planes
-    distance = calculate_distance_between_planes(floor_model['normal'], floor_model['d'], top_model['normal'], top_model['d'])
-    print(f"The distance between the two planes is: {distance:.6f}")
+    # RANSAC Visualization
+    axs[0, 0].imshow(initial_top_mask, cmap='gray')
+    axs[0, 0].set_title("RANSAC Initial Top Mask")
 
-    # Analyze the top mask to get dimensions
-    dimensions = mask_dimensions(largest_top_component_mask, cloud_img)
-    if dimensions is not None:
-        length, width = dimensions
-        print(f"Length: {length:.2f}, Width: {width:.2f}")
-        corners = np.array([[0, 0, 0],                    # Bottom left front
-                    [length, 0, 0],               # Bottom right front
-                    [length, width, 0],           # Bottom right back
-                    [0, width, 0],                # Bottom left back
-                    [0, 0, distance],                # Top left front
-                    [length, 0, distance],           # Top right front
-                    [length, width, distance],       # Top right back
-                    [0, width, distance]])           # Top left back
-        # print("Corners of the box:\n", corners)
-    else:
-        print("No points found in the box mask.")
-        
-    visualize_box_corners(corners)
+    axs[0, 1].imshow(refined_top_mask, cmap='gray')
+    axs[0, 1].set_title("RANSAC Refined Top Mask")
 
-    fig, axs = plt.subplots(3, 2, figsize=(12, 6))
+    # MLESAC Visualization
+    axs[1, 0].imshow(initial_top_mask_mlesac, cmap='gray')
+    axs[1, 0].set_title("MLESAC Initial Top Mask")
 
+    axs[1, 1].imshow(refined_top_mask_mlesac, cmap='gray')
+    axs[1, 1].set_title("MLESAC Refined Top Mask")
 
-    axs[0, 0].imshow(initial_mask, cmap='gray')
-    axs[0, 0].set_title("Floor Mask")
-
-
-    axs[0, 1].imshow(refined_mask, cmap='gray')
-    axs[0, 1].set_title("Floor Refined Mask")
-
-    axs[1, 0].imshow(initial_top_mask, cmap='gray')
-    axs[1, 0].set_title("Top Mask")
-
-
-    axs[1, 1].imshow(refined_top_mask, cmap='gray')
-    axs[1, 1].set_title("Top Refined Mask")
-
-
+    # Largest Connected Components
     axs[2, 0].imshow(largest_top_component_mask, cmap='gray')
-    axs[2, 0].set_title("Largest Connected Top Refined Mask")
-    axs[2, 1].axis('off')  # Hide the empty subplot
+    axs[2, 0].set_title("RANSAC Largest Connected Top Mask")
 
+    axs[2, 1].imshow(largest_top_component_mask_mlesac, cmap='gray')
+    axs[2, 1].set_title("MLESAC Largest Connected Top Mask")
 
     for ax in axs.flat:
         ax.axis('off')
@@ -397,24 +530,46 @@ def main():
     plt.tight_layout()
     plt.show()
 
-    plt.figure(figsize=(10, 6))
-    # Display the refined floor mask in grayscale
-
+    # Comparative overlay
+    plt.figure(figsize=(12, 6))
+    plt.subplot(121)
     plt.imshow(refined_mask, cmap='Blues', alpha=0.6)
-    # Overlay the largest connected mask in red
     plt.imshow(largest_top_component_mask, cmap='Reds', alpha=0.5)
-    # Adding title
-    plt.title("Overlay of Refined Floor Mask and Largest Connected Mask")
+    plt.title("RANSAC: Floor and Top Masks")
     plt.axis('off')
 
-    # Show the plot
+    plt.subplot(122)
+    plt.imshow(refined_mask, cmap='Blues', alpha=0.6)
+    plt.imshow(largest_top_component_mask_mlesac, cmap='Reds', alpha=0.5)
+    plt.title("MLESAC: Floor and Top Masks")
+    plt.axis('off')
+
+    plt.tight_layout()
     plt.show()
 
-    # print("Normal of plane 1:", floor_model['normal'])
-    # print("D of plane 1:", floor_model['d'])
-    # print("Normal of plane 2:", top_model['normal'])
-    # print("D of plane 2:", top_model['d'])
+    # Calculate distances and dimensions for both
+    distance_ransac = calculate_distance_between_planes(
+        floor_model['normal'], floor_model['d'], 
+        top_model['normal'], top_model['d']
+    )
+    distance_mlesac = calculate_distance_between_planes(
+        floor_model['normal'], floor_model['d'], 
+        top_model_mlesac['normal'], top_model_mlesac['d']
+    )
 
+    print(f"RANSAC Plane Distance: {distance_ransac:.6f}")
+    print(f"MLESAC Plane Distance: {distance_mlesac:.6f}")
+
+    # Dimensions comparison
+    dimensions_ransac = mask_dimensions(largest_top_component_mask, cloud_img)
+    dimensions_mlesac = mask_dimensions(largest_top_component_mask_mlesac, cloud_img)
+
+    if dimensions_ransac and dimensions_mlesac:
+        length_ransac, width_ransac = dimensions_ransac
+        length_mlesac, width_mlesac = dimensions_mlesac
+        
+        print(f"RANSAC - Length: {length_ransac:.2f}, Width: {width_ransac:.2f}")
+        print(f"MLESAC - Length: {length_mlesac:.2f}, Width: {width_mlesac:.2f}")
 
 
 if __name__ == "__main__":

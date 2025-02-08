@@ -3,6 +3,7 @@ import scipy.io
 import matplotlib.pyplot as plt
 import cv2
 from scipy.ndimage import label, binary_erosion, binary_dilation
+import math
 
 
 def display_image(img, title):
@@ -105,27 +106,18 @@ def compute_inliers(points, normal, d, threshold, use_mlesac=False, gamma=2.0):
 
         return inliers_mask, cost
     else:
-        # Standard RANSAC: return mask and negative inlier count for maximization
+        # Standard RANSAC: return mask and inlier count for maximization (we can call it cost for consistency)
         inliers_mask = distances < threshold
         return inliers_mask, np.sum(inliers_mask)
+    
+    # //////////////////////////////////////////
+    # ========================================
+    # RANSAC Implementation
+    # ========================================
+    # //////////////////////////////////////////
 
 def run_ransac(cloud_img, threshold, num_iterations, gamma=2.0, use_mlesac=False):
-    """
-    Runs the RANSAC algorithm to find the best-fitting plane in a 3D point cloud image.
-
-    Parameters:
-    - cloud_img (np.ndarray): A 3D array representing the point cloud. If 3D, it has shape (H, W, 3) with (x, y, z) coordinates;
-                              if 2D, it has shape (N, 3) with each row representing a 3D point.
-    - threshold (float): The distance threshold to consider a point as an inlier to the plane.
-    - num_iterations (int): Number of RANSAC iterations to run.
-
-    Returns:
-    - best_model (dict): A dictionary containing the 'normal' vector and 'd' value for the best-fit plane.
-    - valid_points (np.ndarray): Array of points considered valid (non-zero `z` component) for plane fitting.
-    - inliers_list (np.ndarray): Indices of points in valid_points that are inliers to the best model.
-    - valid_mask (np.ndarray): A mask indicating which points in cloud_img are valid (non-zero `z` component).
-    - inliers_mask (np.ndarray): Boolean mask marking inliers in `valid_points` for the best model.
-    """
+  
     max_inliers = -np.inf
     best_model = None
     valid_mask = None
@@ -140,32 +132,111 @@ def run_ransac(cloud_img, threshold, num_iterations, gamma=2.0, use_mlesac=False
     else:
         valid_points = cloud_img
 
+   
     for _ in range(num_iterations):
         
         indices = np.random.choice(valid_points.shape[0], 3, replace=False) # Randomly pick 3 unique points
         p1, p2, p3 = valid_points[indices]
 
         normal, d = fit_plane(p1, p2, p3)
-        # if normal is None:  # Skip if the plane fitting failed
-        #     continue
 
-        # inliers_mask = compute_inliers(valid_points, normal, d, threshold)
         inliers_mask, cost = compute_inliers(valid_points, normal, d, threshold,use_mlesac=use_mlesac, gamma=gamma)
-            
-        inliers_No = np.sum(inliers_mask)
 
-
-        if (use_mlesac and cost < best_cost) or (not use_mlesac and inliers_No > max_inliers):
+        if (use_mlesac and cost < best_cost) or (not use_mlesac and cost > max_inliers):
             # If current model has more inliers, update the best model
             best_model = {
                 'normal': normal,
                 'd': d
             }
             best_cost = cost
-            max_inliers = inliers_No
+            max_inliers = cost # Update max_inliers for standard RANSAC. Named cost for consistency with MLESAC
             inliers_list = np.where(inliers_mask)[0]
 
     return best_model, valid_points, inliers_list, valid_mask, inliers_mask
+
+    # //////////////////////////////////////////
+    # ========================================
+    # Preemptive RANSAC Implementation
+    # ========================================
+    # //////////////////////////////////////////
+
+def preemption_function(i, M, B):
+    """
+    Args:
+    - i: Current iteration
+    - M: Total initial hypotheses
+    - B: Batch size
+    
+    Returns:
+    Number of top hypotheses to retain
+    """
+    # for reference, see flooring and ceiling functions
+    # round = -np.floor(i/B)
+    # return int(np.floor(M * 2 (round)))
+    return max(1, int(np.floor(M * 2 ** (- np.floor(i / B)))))
+
+def preemptive_ransac(cloud_img, num_hypotheses=100, batch_size=100, threshold=0.05, use_mlesac=False, gamma=2.0):
+   
+    if cloud_img.ndim == 3:
+        z_component = cloud_img[:, :, 2]
+        valid_mask = z_component != 0
+        valid_points = cloud_img[valid_mask].reshape(-1, 3)
+    else:
+        valid_points = cloud_img
+
+    # Generate M (num_hypotheses) initial hypotheses
+    hypotheses = []
+    for _ in range(num_hypotheses):
+        indices = np.random.choice(valid_points.shape[0], 3, replace=False)
+        p1, p2, p3 = valid_points[indices]
+        
+        normal, d = fit_plane(p1, p2, p3)
+        if normal is None:
+            continue
+        
+        hypotheses.append((normal, d))
+
+    # Preemptive evaluation
+    for i in range(0, valid_points.shape[0], batch_size): # Iterate over batches because of memory constraints
+        batch = valid_points[i:i+batch_size]
+        
+        # Evaluate hypotheses on current batch
+        hypothesis_scores = []
+        for normal, d in hypotheses:
+            if use_mlesac:
+                _, cost = compute_inliers(batch, normal, d, threshold, use_mlesac=True, gamma=gamma)
+                hypothesis_scores.append(cost)
+            else:
+                inliers_mask, inliers_count = compute_inliers(batch, normal, d, threshold)
+                # For regular RANSAC, higher inlier count is better, so negate for sorting
+                hypothesis_scores.append(-inliers_count)  # Negative to make higher counts sort first
+
+        # Sort hypotheses by score (ascending for MLESAC, descending for RANSAC)
+        sorted_indices = np.argsort(hypothesis_scores)
+        
+        # Retain top hypotheses based on preemption function
+        top_k = preemption_function(i, num_hypotheses, batch_size)
+        hypotheses = [hypotheses[idx] for idx in sorted_indices[:top_k]] # Retain top k hypotheses
+
+    # Final best hypothesis
+    best_normal, best_d = hypotheses[0]
+    
+    # Compute final inliers
+    inliers_mask, cost = compute_inliers(valid_points, best_normal, best_d, threshold, use_mlesac=use_mlesac, gamma=gamma)
+
+    best_model = {
+        'normal': best_normal,
+        'd': best_d
+    }
+    
+    return best_model, valid_points[inliers_mask], np.where(inliers_mask)[0], valid_mask, inliers_mask
+
+
+    # //////////////////////////////////////////
+    # ========================================
+    # Mask Processing and Visualization
+    # ========================================
+    # //////////////////////////////////////////
 
 def create_initial_mask(img_shape, inliers_list, valid_mask):
     
@@ -185,7 +256,7 @@ def refine_mask(mask_img):
 
     return refined_mask
 
-def visualize_mask(cloud_img,initial_mask, refined_mask):
+def visualize_mask(initial_mask, refined_mask):
 
     fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 
@@ -197,34 +268,11 @@ def visualize_mask(cloud_img,initial_mask, refined_mask):
     axs[1].imshow(refined_mask, cmap='gray')
     axs[1].set_title("Refined Mask")
 
-    # # 3D visualization of the points classified as floor
-    # fig = plt.figure()
-    # ax = fig.add_subplot(111, projection='3d')
-    # floor_points = cloud_img[initial_mask == 1]
-    # ax.scatter(floor_points[:, 0], floor_points[:, 1], floor_points[:, 2], c='blue', s=1)
-    # plt.title("3D Visualization of Floor Points")
-    # plt.show()
     plt.show()
 
 
-
 def find_largest_connected_component(binary_mask):
-    """
-    Identifies the largest connected component in a binary mask.
-
-    Parameters:
-    binary_mask (numpy.ndarray): A binary image (2D array) where the foreground is represented by 1s (True) and the background by 0s (False).
-                               This image can contain multiple connected components, and the function will return the largest one.
-
-    Returns:
-    numpy.ndarray: A binary mask where only the largest connected component is retained (1s), and all other areas (including the background) are set to 0s (False).
-
-    Steps:
-    1. Label the connected components in the binary mask.
-    2. Count the size of each connected component.
-    3. Identify the largest component (excluding the background).
-    4. Generate a mask that contains only the largest connected component.
-    """
+    
     labeled_mask, num_features = label(binary_mask)
     component_sizes = np.bincount(labeled_mask.ravel())   # Count the size of each component
     largest_component_index = np.argmax(component_sizes[1:]) + 1  #(ignore index 0, which is the background) +1 to offset for background index
@@ -232,6 +280,12 @@ def find_largest_connected_component(binary_mask):
 
     return largest_component_mask
 
+
+    # //////////////////////////////////////////
+    # ========================================
+    # Plane Comparison and Metrics
+    # ========================================
+    # //////////////////////////////////////////
 
 def are_planes_parallel(normal1, normal2, threshold_angle=5.0):
     # Normalize the normal vectors
@@ -253,6 +307,13 @@ def calculate_distance_between_planes(normal1, d1, normal2, d2):
     distance = numerator / normal_magnitude
 
     return distance
+
+
+    # //////////////////////////////////////////
+    # ========================================
+    # Box Dimensions and Visualization
+    # ========================================
+    # //////////////////////////////////////////
 
 def mask_dimensions(box_mask, cloud_img):
     # Extract 3D points that belong to the box using the mask
@@ -296,95 +357,7 @@ def visualize_box_corners(corners):
     ax.view_init(elev=20, azim=30)  # Set view angle
     plt.show()
 
-    # ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-def preemptive_ransac(cloud_img, num_hypotheses=100, batch_size=100, threshold=0.05, use_mlesac=False, gamma=2.0):
-    """
-    Implements Preemptive RANSAC algorithm.
     
-    Args:
-    - cloud_img: Input point cloud
-    - num_hypotheses: Total number of initial hypotheses (M)
-    - batch_size: Number of points to evaluate before preemption (B)
-    - threshold: Inlier distance threshold
-    - use_mlesac: Whether to use MLESAC cost function
-    - gamma: Outlier cost multiplier for MLESAC
-    
-    Returns:
-    - Best plane model
-    - Inliers list
-    - Valid points
-    - Valid mask
-    - Inliers mask
-    """
-    def preemption_function(i, M, B):
-        """
-        Calculates number of top hypotheses to retain at iteration i
-        
-        Args:
-        - i: Current iteration
-        - M: Total initial hypotheses
-        - B: Batch size
-        
-        Returns:
-        Number of top hypotheses to retain
-        """
-        return max(1, int(M * (1 - i / (cloud_img.shape[0] / B))))
-
-    # Prepare valid points
-    if cloud_img.ndim == 3:
-        z_component = cloud_img[:, :, 2]
-        valid_mask = z_component != 0
-        valid_points = cloud_img[valid_mask].reshape(-1, 3)
-    else:
-        valid_points = cloud_img
-        valid_mask = np.ones(cloud_img.shape[0], dtype=bool)
-
-    # Generate initial hypotheses
-    hypotheses = []
-    for _ in range(num_hypotheses):
-        indices = np.random.choice(valid_points.shape[0], 3, replace=False)
-        p1, p2, p3 = valid_points[indices]
-        
-        normal, d = fit_plane(p1, p2, p3)
-        if normal is None:
-            continue
-        
-        hypotheses.append((normal, d))
-
-    # Preemptive evaluation
-    for i in range(0, valid_points.shape[0], batch_size):
-        batch = valid_points[i:i+batch_size]
-        
-        # Evaluate hypotheses on current batch
-        hypothesis_scores = []
-        for normal, d in hypotheses:
-            if use_mlesac:
-                _, cost = compute_inliers(batch, normal, d, threshold, use_mlesac=True, gamma=gamma)
-                hypothesis_scores.append(cost)
-            else:
-                inliers_mask, inliers_count = compute_inliers(batch, normal, d, threshold)
-                hypothesis_scores.append(-inliers_count)  # Negative for maximization
-
-        # Sort hypotheses by score
-        sorted_indices = np.argsort(hypothesis_scores)
-        
-        # Retain top hypotheses based on preemption function
-        top_k = preemption_function(i, num_hypotheses, batch_size)
-        hypotheses = [hypotheses[idx] for idx in sorted_indices[:top_k]]
-
-    # Final best hypothesis
-    best_normal, best_d = hypotheses[0]
-    
-    # Compute final inliers
-    inliers_mask, _ = compute_inliers(valid_points, best_normal, best_d, threshold, use_mlesac=use_mlesac, gamma=gamma)
-    
-    best_model = {
-        'normal': best_normal,
-        'd': best_d
-    }
-    
-    return best_model, valid_points[inliers_mask], np.where(inliers_mask)[0], valid_mask, inliers_mask
 
 def main():
 
@@ -392,13 +365,14 @@ def main():
     file_path = f'CV-projectEx1/data/example{x}kinect.mat'
     data = scipy.io.loadmat(file_path)
     amplitude_img, distance_img, cloud_img = data[f'amplitudes{x}'], data[f'distances{x}'], data[f'cloud{x}']
-
+    np.random.seed(42)  # For reproducibility
 
     # Experiment with different M and B values
     configurations = [
-        (50, 50),   # Conservative: fewer hypotheses, smaller batches
+        # (50, 50),   # Conservative: fewer hypotheses, smaller batches
         (100, 100), # Balanced approach
-        (200, 200)  # Aggressive: more hypotheses, larger batches
+        (200, 200),  # Aggressive: more hypotheses, larger batches
+        (500,100)
     ]
 
     plt.figure(figsize=(15, 5))
@@ -408,7 +382,8 @@ def main():
             cloud_img, 
             num_hypotheses=M, 
             batch_size=B, 
-            threshold=0.05
+            threshold=0.05,
+            use_mlesac=False
         )
         
         # Create and visualize mask
@@ -423,15 +398,16 @@ def main():
     plt.tight_layout()
     plt.show()
 
-    # Optional: Compute metrics for comparison
-    for M, B in configurations:
-        floor_model, valid_points, floor_inliers, valid_mask, inliers_mask = preemptive_ransac(
-            cloud_img, 
-            num_hypotheses=M, 
-            batch_size=B, 
-            threshold=0.05
-        )
-        print(f"M={M}, B={B}: {len(floor_inliers)} inliers")
+    # # compute metrics for comparison
+    # for M, B in configurations:
+    #     floor_model, valid_points, floor_inliers, valid_mask, inliers_mask = preemptive_ransac(
+    #         cloud_img, 
+    #         num_hypotheses=M, 
+    #         batch_size=B, 
+    #         threshold=0.05,
+    #         use_mlesac=True,
+    #     )
+    #     print(f"M={M}, B={B}: {len(floor_inliers)} inliers")
 
 
     # Display amplitude and distance images
@@ -475,12 +451,12 @@ def main():
     print(f"Non-floor cloud shape: {non_floor_cloud_img.shape}")
 
     # RANSAC to find the second plane (top)
-    top_model, valid_points, top_inliers, valid_top_mask, inliers_mask = run_ransac(non_floor_cloud_img, num_iterations=3000, threshold=0.05)
+    top_model, valid_points, top_inliers, valid_top_mask, inliers_mask = run_ransac(non_floor_cloud_img, num_iterations=3000, threshold=0.01)
     print(f"Best top model found with {len(top_inliers)} inliers.")
     top_model['normal'] = top_model['normal'] / np.linalg.norm(top_model['normal'])
 
     # Find top plane with MLESAC
-    top_model_mlesac, _, top_inliers_mlesac, _, _ = run_ransac(non_floor_cloud_img, num_iterations=3000, threshold=0.05,use_mlesac=True, gamma=2 )
+    top_model_mlesac, _, top_inliers_mlesac, _, _ = run_ransac(non_floor_cloud_img, num_iterations=3000, threshold=0.01,use_mlesac=True, gamma=2 )
     top_model_mlesac['normal'] /= np.linalg.norm(top_model_mlesac['normal'])
 
     # Compare inliers

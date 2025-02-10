@@ -58,10 +58,7 @@ class TrainingExampleGenerator:
         xA = max(box1[0], box2[0]); yA = max(box1[1], box2[1])
         xB = min(box1[2], box2[2]); yB = min(box1[3], box2[3])
 
-        x_overlap = xB - xA
-        y_overlap = yB - yA
-
-        intersection = x_overlap * y_overlap # area of intersection
+        intersection = max(0, xB - xA) * max(0, yB - yA) # area of intersection
         
         # Compute union
         area1 = w1 * h1
@@ -83,7 +80,7 @@ class TrainingExampleGenerator:
             annotations = json.load(f)
 
          # Adjusted thresholds
-        tp, tn = 0.6, 0.3 
+        tp, tn = 0.6, 0.4 
 
         # Dictionary to store ground truth boxes for quick lookup
         ground_truth_map = {

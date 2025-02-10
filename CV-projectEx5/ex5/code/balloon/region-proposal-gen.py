@@ -87,6 +87,16 @@ class BalloonRegionProposalGenerator:
                 self.save_regions(regions, output_path)
 
 
+
+    def run(self, data_root: str, output_root: str, splits: list):
+            """Runs processing for all dataset splits."""
+            for split in splits:
+                split_dir = os.path.join(data_root, split)
+                annotation_file = os.path.join(split_dir, "_annotations.coco.json")
+                output_dir = os.path.join(output_root, split)
+                
+                self.process_dataset_split(split_dir, annotation_file, output_dir)
+
 def main():
     # Configuration
     base_path = "CV-projectEx5/ex5"
@@ -97,13 +107,7 @@ def main():
     # Initialize generator
     generator = BalloonRegionProposalGenerator(scale=500, min_size=20)
     
-    # Process each split
-    for split in splits:
-        split_dir = os.path.join(data_root, split)
-        annotation_file = os.path.join(split_dir, "_annotations.coco.json")
-        output_dir = os.path.join(output_root, split)
-        
-        generator.process_dataset_split(split_dir, annotation_file, output_dir)
+    generator.run(data_root, output_root, splits)
 
 if __name__ == '__main__':
     main()

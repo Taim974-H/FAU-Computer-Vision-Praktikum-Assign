@@ -14,10 +14,10 @@ Before recognizing objects, we break the image into **tiny regions**. These are 
 Now that we have small segments, we need to **analyze each one** to understand its properties.  
 
 🔍 **Key Features Used to Compare Regions:**  
-1. **Color** – What colors are present in the region? (Histogram-based comparison)  
-2. **Texture** – How rough or smooth is the region? (Gradient-based comparison)  
-3. **Size** – How large is the region? (Pixel count)  
-4. **Fill** – How well does the region fill its bounding box?  
+1. **Color** - What colors are present in the region? (Histogram-based comparison)  
+2. **Texture** - How rough or smooth is the region? (Gradient-based comparison)  
+3. **Size** - How large is the region? (Pixel count)  
+4. **Fill** - How well does the region fill its bounding box?  
 
 ---
 
@@ -51,10 +51,10 @@ This is where the magic happens! **Similar neighboring regions** are **merged to
 
 🔍 **How Do We Decide Which Regions to Merge?**  
 We calculate a **similarity score** based on:  
-- **Color similarity** – If two regions have similar color distributions, they might belong to the same object.  
-- **Texture similarity** – If textures match, they are likely part of the same thing.  
-- **Size compatibility** – Avoid merging if the new region becomes disproportionately large.  
-- **Fill ratio** – If merging two regions improves the fit within their bounding box, it's likely a good merge.  
+- **Color similarity** - If two regions have similar color distributions, they might belong to the same object.  
+- **Texture similarity** - If textures match, they are likely part of the same thing.  
+- **Size compatibility** - Avoid merging if the new region becomes disproportionately large.  
+- **Fill ratio** - If merging two regions improves the fit within their bounding box, it's likely a good merge.  
 
 ---
 
@@ -65,6 +65,10 @@ After several iterations of merging, we are left with **a set of candidate regio
 Instead of testing every possible location, we now have **a reduced number of regions** that still **cover all objects** in the image.  
 
 ---
+
+git check-ignore -v C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx5
+ls -la computer-vision-project\CV-projectEx5
+
 
 ## **Conclusion**  
 Selective Search **balances speed and accuracy** by intelligently merging regions instead of brute-force scanning (convolutions).  

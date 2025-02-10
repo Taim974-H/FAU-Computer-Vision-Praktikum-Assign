@@ -2,6 +2,8 @@ import os
 import json
 import skimage.io
 import numpy as np
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from selective_search import selective_search
 import logging
 from tqdm import tqdm
@@ -19,10 +21,11 @@ class NumpyEncoder(json.JSONEncoder):
         return super(NumpyEncoder, self).default(obj)
 
 class BalloonRegionProposalGenerator:
-    def __init__(self, scale: int = 500, min_size: int = 20):
-        self.scale = scale
-        self.min_size = min_size
-        self.setup_logging()
+
+    def __init__(self, scale: int = 300, min_size: int = 15):  # Adjusted default parameters
+            self.scale = scale
+            self.min_size = min_size
+            self.setup_logging()
 
     # adding logging to make sure we can see what's happening in each step
     def setup_logging(self): 
@@ -32,6 +35,7 @@ class BalloonRegionProposalGenerator:
         )
         self.logger = logging.getLogger(__name__)
 
+
     def save_regions(self, regions: dict, output_path: str):
         try:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -39,6 +43,7 @@ class BalloonRegionProposalGenerator:
                 json.dump(regions, f, cls=NumpyEncoder) # used custom encoder for NumPy types to fix serialization error
         except Exception as e:
             self.logger.error(f"Error saving regions to {output_path}: {str(e)}")
+
 
     def process_dataset_split(self, split_dir: str, annotation_file: str, output_dir: str):
         self.logger.info(f"Processing split: {os.path.basename(split_dir)}")
@@ -71,43 +76,47 @@ class BalloonRegionProposalGenerator:
             # ------------------------------
 
             image_path = os.path.join(split_dir, image_name)
-            image = skimage.io.imread(image_path)
-        
-            # Ensure image is uint8 (to fix an error causing crash)
-            if image.dtype != np.uint8:
-                image = img_as_ubyte(image)
+            try:
+                image = skimage.io.imread(image_path)
             
-            _, regions = selective_search(
-                image,
-                scale=self.scale,
-                min_size=self.min_size
-            )
+                if image.dtype != np.uint8:
+                    image = img_as_ubyte(image)
+                
+                _, regions = selective_search(
+                    image,
+                    scale=self.scale,
+                    min_size=self.min_size
+                )
 
-            if regions is not None:
-                self.save_regions(regions, output_path)
+                if regions is not None:
+                    self.save_regions(regions, output_path)
+            except Exception as e:
+                self.logger.error(f"Error processing {image_path}: {str(e)}")
+                continue
 
 
 
     def run(self, data_root: str, output_root: str, splits: list):
-            """Runs processing for all dataset splits."""
-            for split in splits:
-                split_dir = os.path.join(data_root, split)
-                annotation_file = os.path.join(split_dir, "_annotations.coco.json")
-                output_dir = os.path.join(output_root, split)
-                
-                self.process_dataset_split(split_dir, annotation_file, output_dir)
+        """Runs processing for all dataset splits."""
+        for split in splits:
+            split_dir = os.path.join(data_root, split)
+            annotation_file = os.path.join(split_dir, "_annotations.coco.json")
+            output_dir = os.path.join(output_root, split)
+            self.process_dataset_split(split_dir, annotation_file, output_dir)
 
 def main():
     # Configuration
     base_path = "CV-projectEx5/ex5"
     data_root = os.path.join(base_path, "data/balloon_dataset")
-    output_root = os.path.join(base_path, "code/results/balloon_regions")  # Changed output path
+    proposal_root = os.path.join(base_path, "code/results/balloon_regions")  # Changed output path
     splits = ['train', 'valid']
     
-    # Initialize generator
-    generator = BalloonRegionProposalGenerator(scale=500, min_size=20)
-    
-    generator.run(data_root, output_root, splits)
+    # Generate region proposals
+    generator = BalloonRegionProposalGenerator(
+        scale=300,  # Reduced from 500 to get more precise regions
+        min_size=15  # Slightly reduced to catch smaller balloons
+    )
+    generator.run(data_root, proposal_root, splits)
 
 if __name__ == '__main__':
     main()

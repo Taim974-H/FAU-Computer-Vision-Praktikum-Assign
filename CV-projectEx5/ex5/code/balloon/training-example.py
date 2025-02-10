@@ -1,9 +1,13 @@
-import numpy as np
-import json
 import os
-import logging
+import json
 import skimage.io
+import numpy as np
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from selective_search import selective_search
+import logging
 from tqdm import tqdm
+from skimage import img_as_ubyte
 
 class NumpyEncoder(json.JSONEncoder):
     """Custom JSON encoder for NumPy types"""
@@ -60,8 +64,8 @@ class TrainingExampleGenerator:
         intersection = x_overlap * y_overlap # area of intersection
         
         # Compute union
-        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
-        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        area1 = w1 * h1
+        area2 = w2 * h2
         union = area1 + area2 - intersection
 
         return intersection / union if union > 0 else 0
@@ -78,7 +82,8 @@ class TrainingExampleGenerator:
         with open(annotation_file, "r") as f:
             annotations = json.load(f)
 
-        tp, tn = 0.75, 0.25  # IoU thresholds
+         # Adjusted thresholds
+        tp, tn = 0.6, 0.3 
 
         # Dictionary to store ground truth boxes for quick lookup
         ground_truth_map = {
@@ -117,6 +122,12 @@ class TrainingExampleGenerator:
                 elif max_iou <= tn:
                     negative_samples.append(proposal)
 
+            # Balance negative samples (max 3x positives)
+            if positive_samples:
+                max_neg = len(positive_samples) * 3
+                if len(negative_samples) > max_neg:
+                    negative_samples = negative_samples[:max_neg]
+
             # Save labeled data for this image
             te_output_dir = os.path.join(output_dir, image_filename)
             self.save_regions(positive_samples, os.path.join(te_output_dir, "positive_samples.json"))
@@ -136,18 +147,17 @@ class TrainingExampleGenerator:
 
 
 def main():
-    # Configuration
     base_path = "CV-projectEx5/ex5"
-    proposal_root = os.path.join(base_path, "code/results/balloon_regions")
     data_root = os.path.join(base_path, "data/balloon_dataset")
+    proposal_root = os.path.join(base_path, "code/results/balloon_regions")
     output_root = os.path.join(base_path, "code/results/balloon_regions/training-examples")
     splits = ['train', 'valid']
-
     
-    # Initialize generator
-    generator = TrainingExampleGenerator(proposal_dir=proposal_root)
-    generator.run(data_root,proposal_root, output_root, splits)
     
+    # Generate training examples
+    example_generator = TrainingExampleGenerator(proposal_dir=proposal_root)
+    example_generator.run(data_root, proposal_root, output_root, splits)
 
 if __name__ == '__main__':
     main()
+

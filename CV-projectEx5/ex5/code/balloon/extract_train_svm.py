@@ -96,13 +96,15 @@ def load_training_samples(proposal_root, image_dir):
 
 def train_svm(X, y, save_path="balloon_detector_svm.pkl"):
 
+    svm = SVC()
     # Ensure X is a 2D array before scaling
     X = X.reshape(X.shape[0], -1)
     # svm sensitive to feature scales (larger values might be given more importance)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    svm = SVC(kernel="linear", probability=True)  # linear svm
+    # handling class imbalance by assigning weights to classes inversely proportional to class frequencies (balanced)
+    svm = SVC(kernel="linear", probability=True, class_weight="balanced")  # linear svm
     svm.fit(X_scaled, y)
 
     joblib.dump({"svm": svm, "scaler": scaler}, save_path)

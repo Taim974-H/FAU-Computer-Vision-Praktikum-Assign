@@ -148,7 +148,7 @@ def main():
     data_root = os.path.join(base_path, "data/balloon_dataset")
     proposal_root = os.path.join(base_path, "code/results/balloon_regions")
     output_root = os.path.join(base_path, "code/results/balloon_regions/training-examples")
-    splits = ['train', 'valid']
+    splits = ['train','valid']
     
     
     # Generate training examples

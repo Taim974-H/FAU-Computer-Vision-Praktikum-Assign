@@ -29,26 +29,23 @@ def load_data(path, filenames):
 def demosaic(raw_img):
     # Padding to handle edge cases
     padded_img = np.pad(raw_img, pad_width=1, mode='symmetric')
-    height, width = padded_img.shape
+    # height, width = padded_img.shape
 
     # Initialize the reconstructed image
-    reconstructed_img = np.zeros((raw_img.shape[0], raw_img.shape[1], 3))
+    reconstructed_img = np.zeros((raw_img.shape[0], raw_img.shape[1], 3), dtype=np.float64)
 
     # Create Bayer masks for BGGR pattern
-    red_mask = np.zeros_like(padded_img)
-    green_mask = np.zeros_like(padded_img)
-    blue_mask = np.zeros_like(padded_img)
+    red_mask = np.zeros_like(padded_img, dtype=np.float64)
+    green_mask = np.zeros_like(padded_img, dtype=np.float64)
+    blue_mask = np.zeros_like(padded_img, dtype=np.float64)
 
-    for i in range(height):
-        for j in range(width):
-            if i % 2 == 0 and j % 2 == 0:  # Top-left (Blue)
-                blue_mask[i, j] = 1
-            elif i % 2 == 1 and j % 2 == 1:  # Bottom-right (Red)
-                red_mask[i, j] = 1
-            else:  # Green
-                green_mask[i, j] = 1
+    # Vectorized mask creation for BGGR pattern
+    red_mask[1::2, 1::2] = 1  # Red pixels
+    green_mask[0::2, 1::2] = 1  # Green pixels (top-right)
+    green_mask[1::2, 0::2] = 1  # Green pixels (bottom-left)
+    blue_mask[0::2, 0::2] = 1  # Blue pixels
 
-    # Separate channels
+    # Separate channels using masks
     red_channel = padded_img * red_mask
     green_channel = padded_img * green_mask
     blue_channel = padded_img * blue_mask
@@ -83,11 +80,6 @@ def demosaic(raw_img):
     reconstructed_img[:, :, 1] = green_interpolated[1:-1, 1:-1]  # Green
     reconstructed_img[:, :, 2] = blue_interpolated[1:-1, 1:-1]  # Blue
 
-    # Normalize and convert to uint8
-    reconstructed_img -= reconstructed_img.min()
-    reconstructed_img /= reconstructed_img.max()
-    reconstructed_img = np.clip(reconstructed_img * 255, 0, 255).astype(np.uint8)
-
     return reconstructed_img
 
 #############################################################
@@ -97,14 +89,18 @@ def demosaic(raw_img):
 #############################################################
 
 def normalize_0_to_1(rgb_img):
-    #Normalize the data
-    a = np.percentile(rgb_img,0.01)
-    b = np.percentile(rgb_img,99.99)
-    normalized_img = (rgb_img-a)/(b-a) #shape = (4660, 6984, 3)
-    #Clip the values to [0, 1]
-    normalized_img[normalized_img < 0] = 0
-    normalized_img[normalized_img > 1] = 1
     
+    if rgb_img.dtype != np.float64:
+        rgb_img = rgb_img.astype(np.float64)
+
+    # Compute 0.01 and 99.99 percentiles
+    a = np.percentile(rgb_img, 0.01)
+    b = np.percentile(rgb_img, 99.99)
+
+    # Normalize to [0, 1] and clip outliers
+    normalized_img = (rgb_img - a) / (b - a)
+    normalized_img = np.clip(normalized_img, 0, 1)
+        
     return normalized_img
     
 def gamma_correction(rgb_img, gamma = 0.3):

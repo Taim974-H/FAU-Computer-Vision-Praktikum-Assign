@@ -85,6 +85,7 @@ def demosaic(raw_img):
 
     return reconstructed_img
 
+
 #############################################################
 
 # Gamme Correction ------------------------------------------
@@ -217,7 +218,7 @@ def icam06(rgb_image, output_range=4):
     # Step 3 
     log_input_intensity = np.log(input_intensity + 1e-8)  # Add a small value to prevent log(0)
     # Step 4
-    log_base = cv2.bilateralFilter(log_input_intensity.astype(np.float32), 5, 30, 30)
+    log_base = cv2.bilateralFilter(log_input_intensity.astype(np.float32), 5, 0.5,5.0)
     # Step 5 
     log_details = log_input_intensity - log_base
     # Step 6 
@@ -337,8 +338,7 @@ def main():
     reconstructed_img /= reconstructed_img.max()
 
     # Improve Luminosity
-    normalized_img = normalize_0_to_1(reconstructed_img)
-    luminosity_corr_img = gamma_correction(normalized_img, gamma=0.5)
+    luminosity_corr_img = gamma_correction(reconstructed_img, gamma=0.5)
 
     # White Balance
     white_balance_img = white_balance(luminosity_corr_img)
@@ -470,8 +470,7 @@ def main():
 
     # Step 6: Gamma Correction
     print("Applying gamma correction...")
-    g_img_norm = normalize_0_to_1(log_hdr)
-    gamma_corr_img = gamma_correction(g_img_norm, gamma=0.5)
+    gamma_corr_img = gamma_correction(log_hdr, gamma=0.5)
     print("Gamma correction complete.")
     
     # Step 7: White Balance

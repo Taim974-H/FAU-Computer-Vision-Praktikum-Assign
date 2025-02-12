@@ -29,23 +29,26 @@ def load_data(path, filenames):
 def demosaic(raw_img):
     # Padding to handle edge cases
     padded_img = np.pad(raw_img, pad_width=1, mode='symmetric')
-    # height, width = padded_img.shape
+    height, width = padded_img.shape
 
     # Initialize the reconstructed image
-    reconstructed_img = np.zeros((raw_img.shape[0], raw_img.shape[1], 3), dtype=np.float64)
+    reconstructed_img = np.zeros((raw_img.shape[0], raw_img.shape[1], 3))
 
     # Create Bayer masks for BGGR pattern
-    red_mask = np.zeros_like(padded_img, dtype=np.float64)
-    green_mask = np.zeros_like(padded_img, dtype=np.float64)
-    blue_mask = np.zeros_like(padded_img, dtype=np.float64)
+    red_mask = np.zeros_like(padded_img)
+    green_mask = np.zeros_like(padded_img)
+    blue_mask = np.zeros_like(padded_img)
 
-    # Vectorized mask creation for BGGR pattern
-    red_mask[1::2, 1::2] = 1  # Red pixels
-    green_mask[0::2, 1::2] = 1  # Green pixels (top-right)
-    green_mask[1::2, 0::2] = 1  # Green pixels (bottom-left)
-    blue_mask[0::2, 0::2] = 1  # Blue pixels
+    for i in range(height):
+        for j in range(width):
+            if i % 2 == 0 and j % 2 == 0:  # Top-left (Blue)
+                blue_mask[i, j] = 1
+            elif i % 2 == 1 and j % 2 == 1:  # Bottom-right (Red)
+                red_mask[i, j] = 1
+            else:  # Green
+                green_mask[i, j] = 1
 
-    # Separate channels using masks
+    # Separate channels
     red_channel = padded_img * red_mask
     green_channel = padded_img * green_mask
     blue_channel = padded_img * blue_mask
@@ -89,69 +92,23 @@ def demosaic(raw_img):
 #############################################################
 
 def normalize_0_to_1(rgb_img):
+    #Normalize the data
+    a = np.percentile(rgb_img,0.01)
+    b = np.percentile(rgb_img,99.99)
+    normalized_img = (rgb_img-a)/(b-a) #shape = (4660, 6984, 3)
+    #Clip the values to [0, 1]
+    normalized_img[normalized_img < 0] = 0
+    normalized_img[normalized_img > 1] = 1
     
-    if rgb_img.dtype != np.float64:
-        rgb_img = rgb_img.astype(np.float64)
-
-    # Compute 0.01 and 99.99 percentiles
-    a = np.percentile(rgb_img, 0.01)
-    b = np.percentile(rgb_img, 99.99)
-
-    # Normalize to [0, 1] and clip outliers
-    normalized_img = (rgb_img - a) / (b - a)
-    normalized_img = np.clip(normalized_img, 0, 1)
-        
     return normalized_img
     
 def gamma_correction(rgb_img, gamma = 0.3):
     #Gamma Correction
     #applying gamma correction
     img = normalize_0_to_1(rgb_img)
-    # y= x^(1/gamma)
-    return img**gamma
-
-
-def logistic_correction(img, k=10, x0=0.5):
-    # k : Steepness of the curve (default 10)
-    # x0 : Midpoint of the curve (default 0.5)    
-    return 1 / (1 + np.exp(-k * (img - x0)))
-
-
-def visualize_correction_curves(normalized_img):
-    # Extract a single channel and sample data
-    x = normalized_img[:, :, 1].ravel()[::100]  # Reduce data size
-
-    # Create a figure with subplots
-    plt.figure(figsize=(15, 5))
-
-    # Gamma correction curves
-    plt.subplot(1, 2, 1)
-    for gamma in [0.3, 2.0]:
-        y = gamma_correction(x, gamma)
-        plt.plot(x, y, label=f'Gamma = {gamma}')
-    plt.title('Gamma Correction Curves')
-    plt.xlabel('Input Value')
-    plt.ylabel('Output Value')
-    plt.legend(loc='upper left')  # Fix legend position
-    plt.grid(True)
-    plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Identity')
-
-    # Logistic correction curves
-    plt.subplot(1, 2, 2)
-    for k in [5, 20]:
-        y = logistic_correction(x, k)
-        plt.plot(x, y, label=f'k = {k}')
-    plt.title('Logistic Correction Curves')
-    plt.xlabel('Input Value')
-    plt.ylabel('Output Value')
-    plt.legend(loc='upper left')  # Fix legend position
-    plt.grid(True)
-    plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Identity')
-
-    plt.tight_layout()
-    plt.show()
-
-
+    normalized_gamma_corrected = img**gamma
+    
+    return normalized_gamma_corrected
 
 
 #############################################################
@@ -187,10 +144,8 @@ def white_balance(rgb_image):
     # Clip values to avoid overflow
     white_balanced_img = np.clip(white_balanced_img, 0, 1)
 
-    # Scale back to [0, 255] for proper display
-    white_balanced_img_display = (white_balanced_img * 255).astype(np.uint8)
+    return white_balanced_img
 
-    return white_balanced_img_display
 
 #############################################################
 
@@ -209,17 +164,11 @@ def hdr_combination(raw_images, exposure_times):
     
     # Weight function: give more weight to middle-range pixel values
     def weight_function(z):
-        # return np.where(z <= 0.5, z, 1 - z)
         return 1.0 - np.abs(z - 0.5) * 2.0
-    # hueristic approach to Debevec and Malik's approach for HDR radiance map estimation
-    
-    # log_exposure_times = np.log(exposure_times)
-    # weight_sum = np.zeros_like(raw_images[0], dtype=np.float64)
     
     # Initialize HDR image as zero
     hdr_image = np.zeros_like(raw_images[0], dtype=np.float64)
     
-
     # Combine images with their respective weights
     for img, exposure in zip(raw_images, exposure_times):
         # Convert raw image to float
@@ -228,20 +177,6 @@ def hdr_combination(raw_images, exposure_times):
         weights = weight_function(img_float / np.max(img_float))
         # Accumulate weighted image data
         hdr_image += weights * img_float / exposure
-
-    
-    # for img, log_exposure in zip(raw_images, log_exposure_times):
-    #     # Convert raw image to float and normalize to [0, 1]
-    #     img_float = img.astype(np.float64) / np.max(img)
-    #     # Compute pixel-wise weights
-    #     weights = weight_function(img_float)
-    #     # Accumulate weighted log radiance values
-    #     hdr_image += weights * (np.log(img_float + 1e-6) - log_exposure)
-    #     # Accumulate weights
-    #     weight_sum += weights
-    
-    # # Normalize by the total weight to handle division by zero
-    # hdr_image = np.exp(hdr_image / (weight_sum + 1e-6))
     
     return hdr_image
 
@@ -251,20 +186,15 @@ def hdr_combination(raw_images, exposure_times):
 
 #############################################################
 
-def tone_map_log(hdr_image):
+def tone_map_log(hdr_image):    
+    hdr_image = hdr_image.astype(np.float32)
     
-    # normalize to [0, 1]
-    hdr_image = hdr_image.astype(np.float32) / 255.0  
- 
-    log_hdr = np.log1p(hdr_image)  
-
-    # normalize log output to [0, 255]
-    log_hdr = (log_hdr / np.max(log_hdr)) * 255.0
-
-    # # Convert back to uint8 for display/output
-    # tone_mapped = log_hdr.astype(np.uint8)
-
-    return log_hdr
+    log_hdr = np.log(hdr_image + 1e-8)  # Small epsilon to avoid log(0)
+    
+    log_hdr -= log_hdr.min()
+    log_hdr /= log_hdr.max()
+    
+    return log_hdr  # Return normalized float32 image
 
 #############################################################
 
@@ -287,14 +217,14 @@ def icam06(rgb_image, output_range=4):
     # Step 3 
     log_input_intensity = np.log(input_intensity + 1e-8)  # Add a small value to prevent log(0)
     # Step 4
-    log_base = cv2.bilateralFilter(log_input_intensity.astype(np.float32), 4, 50, 50)
+    log_base = cv2.bilateralFilter(log_input_intensity.astype(np.float32), 5, 30, 30)
     # Step 5 
     log_details = log_input_intensity - log_base
     # Step 6 
     compression = np.log(output_range) / (np.max(log_base) - np.min(log_base) + 1e-8)
     log_offset = -np.max(log_base) * compression
     # Step 7
-    output_intensity = np.exp(log_base * compression + log_offset + log_details) / 1.5
+    output_intensity = np.exp(log_base * compression + log_offset + log_details)
     # Step 8
     tone_mapped_image = np.stack([r * output_intensity, g * output_intensity, b * output_intensity], axis=-1)
     # Clip to [0, 1] range
@@ -403,25 +333,20 @@ def main():
     # Demosaic IMG_4782
     reconstructed_img = demosaic(raw_img_2[0])
 
+    reconstructed_img -= reconstructed_img.min()
+    reconstructed_img /= reconstructed_img.max()
+
     # Improve Luminosity
     normalized_img = normalize_0_to_1(reconstructed_img)
-    luminosity_corr_img = gamma_correction(normalized_img, gamma=0.3)
-
-    # luminosity_corr_img = logistic_correction(normalized_img, k=3, x0=0.4)
-    # the k value can be adjusted to change the steepness of the curve
-    # which means the contrast of the image can be adjusted,
-    # more the k, more the contrast 
-    # more the x0, more the mid point of the curve and more the contrast
-
-    # visualize_correction_curves(normalized_img)
-    
+    luminosity_corr_img = gamma_correction(normalized_img, gamma=0.5)
 
     # White Balance
-    balanced_img = white_balance(luminosity_corr_img)
-    
+    white_balance_img = white_balance(luminosity_corr_img)
+    white_balance_display = (white_balance_img * 255).astype(np.uint8)
+
     # Visualize reconstructed image
     plt.figure(figsize=(10, 10))
-    plt.imshow(reconstructed_img.astype(np.uint8))
+    plt.imshow(reconstructed_img)
     plt.title("Reconstructed RGB Image via Interpolation")
     plt.colorbar()
     plt.savefig(os.path.join(plots_output_path, 'Bird_Demosaic_reconstructed_img.png'))
@@ -435,12 +360,12 @@ def main():
     plt.close()    
     
     plt.figure(figsize=(8, 8))
-    plt.imshow(balanced_img)
+    plt.imshow(white_balance_display)
     plt.title("White Balanced Image")
     plt.axis("off")
     plt.savefig(os.path.join(plots_output_path, 'Bird_White_Balanced_Image.png'))
     plt.close()
-
+    
     #############################################################
 
     # Section 5: Sensor Data Linearity
@@ -458,6 +383,7 @@ def main():
     for idx, raw_img in enumerate(raw_img_5):
         print(f"Processing Image {idx + 1} ...")
         rgb_image = demosaic(raw_img)
+
         avg_red, avg_green, avg_blue = avg_pixel_channel(rgb_image)
         red_means.append(avg_red)
         green_means.append(avg_green)
@@ -527,34 +453,36 @@ def main():
     print("Demosaicing the HDR raw image...")
     # hdr_rgb_image = cv2.cvtColor(hdr_img.astype(np.uint16), cv2.COLOR_BAYER_RG2RGB)
     hdr_rgb_image = demosaic(hdr_img)
+    hdr_rgb_image -= hdr_rgb_image.min()
+    hdr_rgb_image /= hdr_rgb_image.max()
     print("Demosaicing complete.")    
 
     # Step 4: Logarithmic Tone Mapping
     print("Applying logarithmic tone mapping...")
     log_hdr = tone_map_log(hdr_rgb_image)
-    tone_mapped = log_hdr.astype(np.uint8)
     # log_hdr = np.log(1 + hdr_rgb_image / np.max(hdr_rgb_image))  # Normalized for log mapping
     print("Logarithmic tone mapping complete.")
 
     # Step 5: Normalize HDR for Visualization
     print("Normalizing HDR for visualization...")
-    normalized_hdr = (log_hdr / np.max(tone_mapped) * 255).astype(np.uint8)
+    normalized_hdr = (log_hdr * 255).astype(np.uint8)
     print("Normalization complete.")
 
     # Step 6: Gamma Correction
     print("Applying gamma correction...")
-    gamma_corr_img = gamma_correction(normalized_hdr / 255.0, gamma=0.3)
-    gamma_corr_img_uint8 = (gamma_corr_img * 255).astype(np.uint8)  # Convert back to 8-bit
+    g_img_norm = normalize_0_to_1(log_hdr)
+    gamma_corr_img = gamma_correction(g_img_norm, gamma=0.5)
     print("Gamma correction complete.")
     
     # Step 7: White Balance
     print("Applying white balance...")
     white_balanced_img = white_balance(gamma_corr_img)
+    white_balance_img_display = (white_balanced_img * 255).astype(np.uint8)
     print("White balance applied.")
 
     # Step 8: ICAM06 Tone Mapping
     print("Icam06 Tone Mapping...")
-    icam06_tone_mapped_img = icam06(white_balanced_img, output_range=4)
+    icam06_tone_mapped_img = icam06(white_balanced_img, output_range=8)
     print("Icam06 Tone Mapping complete.")
 
 
@@ -567,10 +495,10 @@ def main():
     # Plot titles and images
     plots = [
         ('HDR Raw Image', hdr_img, 'gray'),
-        ('Demosaiced HDR RGB', hdr_rgb_image.astype(np.uint8), None),
+        ('Demosaiced HDR RGB', hdr_rgb_image, None),
         ('Normalized HDR after Log Tone Mapped', normalized_hdr, None),
-        ('Gamma Corrected', gamma_corr_img_uint8, None),
-        ('White Balanced', white_balanced_img, None),
+        ('Gamma Corrected', gamma_corr_img, None),
+        ('White Balanced', white_balance_img_display, None),
         ('ICAM06 Tone Mapped', icam06_tone_mapped_img, None)
     ]
 

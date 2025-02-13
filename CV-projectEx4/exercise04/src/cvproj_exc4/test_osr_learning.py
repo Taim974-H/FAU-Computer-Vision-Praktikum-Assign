@@ -1,7 +1,9 @@
 import unittest
 
 import numpy as np
-
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from cvproj_exc4.osr_learning import mpl_training, spl_training
 
 
@@ -89,3 +91,6 @@ class TestOSRLearning(unittest.TestCase):
                 method, len(y_score), self.n_test_samples
             ),
         )
+
+if __name__ == "__main__":
+    unittest.main()

@@ -103,7 +103,7 @@ def normalize_0_to_1(rgb_img):
     
     return normalized_img
     
-def gamma_correction(rgb_img, gamma = 0.3):
+def gamma_correction(rgb_img, gamma):
     #Gamma Correction
     #applying gamma correction
     img = normalize_0_to_1(rgb_img)
@@ -143,6 +143,7 @@ def white_balance(rgb_image):
     white_balanced_img[:, :, 2] *= scale_blue
 
     # Clip values to avoid overflow
+    # white_balanced_img = np.clip(white_balanced_img, 0, 255)
     white_balanced_img = np.clip(white_balanced_img, 0, 1)
 
     return white_balanced_img
@@ -229,7 +230,7 @@ def icam06(rgb_image, output_range=4):
     # Step 8
     tone_mapped_image = np.stack([r * output_intensity, g * output_intensity, b * output_intensity], axis=-1)
     # Clip to [0, 1] range
-    tone_mapped_image = np.clip(tone_mapped_image, 0, 1)
+    tone_mapped_image = np.clip(tone_mapped_image, 0, 255)
 
     return tone_mapped_image
 

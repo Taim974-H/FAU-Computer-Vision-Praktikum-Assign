@@ -83,7 +83,7 @@ def mpl_training(
     x_train: np.ndarray, y_train: np.ndarray
 ) -> Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]:
     try:
-        # Preprocessing: Use RobustScaler and Normalizer
+        # Preprocessing
         preprocessor = make_pipeline(RobustScaler(), Normalizer(norm='l2'))
         x_train_scaled = preprocessor.fit_transform(x_train)
 
@@ -96,7 +96,7 @@ def mpl_training(
             x_unknown = x_train_scaled[unknown_mask]
             best_gmm = None
             best_bic = np.inf
-            for n_components in [2, 3, 5, 7, 10]:
+            for n_components in [2, 3, 5, 7, 11]:
                 gmm = GaussianMixture(n_components=n_components, random_state=42)
                 gmm.fit(x_unknown)
                 bic = gmm.bic(x_unknown)
@@ -121,8 +121,8 @@ def mpl_training(
 
         # Set adaptive thresholds for each class.
         thresholds = {}
-        # Define percentiles: for known classes, use a higher percentile (more tolerant),
-        # and for unknown classes, use a lower percentile to trigger unknown classification more readily.
+        # Define percentiles: for known classes, higher percentile (more tolerant),
+        # and for unknown classes, lower percentile to trigger unknown classification more readily
         known_percentile = 95
         unknown_percentile = 86
         for label in np.unique(new_y_train):
@@ -134,7 +134,7 @@ def mpl_training(
                 else:
                     thresholds[label] = np.percentile(distances, unknown_percentile)
 
-        # Global threshold for unknowns (optional): compute using all samples with labels > max_known.
+        # Global threshold for unknowns
         unknown_class_samples = x_train_scaled[new_y_train > max_known]
         if len(unknown_class_samples) > 0:
             global_unknown_threshold = np.percentile(
@@ -145,19 +145,31 @@ def mpl_training(
 
         def mpl_predict_fn(x_test: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             x_test_scaled = preprocessor.transform(x_test)
-            distances, _ = best_knn.kneighbors(x_test_scaled)
-            y_pred = best_knn.predict(x_test_scaled)
-            y_score = np.zeros(len(x_test))
-            for i, (dist, pred_label) in enumerate(zip(distances, y_pred)):
-                mean_dist = dist.mean()
-                # Get threshold: if label not found, use global_unknown_threshold.
-                threshold = thresholds.get(pred_label, global_unknown_threshold)
-                if threshold is not None and mean_dist > threshold:
-                    y_pred[i] = -1
-                    y_score[i] = 1 - (mean_dist / threshold)
+            distances, indices = best_knn.kneighbors(x_test_scaled)
+            predictions = best_knn.predict(x_test_scaled)
+            confidence_scores = np.zeros(len(x_test))
+            
+            for i, (distances, pred_label) in enumerate(zip(distances, predictions)):
+                avg_distance = distances.mean()
+                # get appropriate threshold for this class
+                threshold = thresholds.get(
+                    pred_label, 
+                    global_unknown_threshold or np.inf
+                )
+                # convert distance to confidence score
+                if threshold > 0:
+                    confidence = 1-(avg_distance/threshold)
                 else:
-                    y_score[i] = 1 - (mean_dist / threshold if threshold and threshold > 0 else 1)
-            return y_pred, y_score
+                    confidence = 1.0
+                
+                # applying distance threshold to detect unknowns
+                if avg_distance > threshold:
+                    predictions[i] = -1
+                    confidence = max(0, confidence)  # ensure non-negative scores
+                
+                confidence_scores[i] = confidence
+                
+            return predictions, confidence_scores
 
         return mpl_predict_fn
 
@@ -199,37 +211,50 @@ def rank1_accuracy(true_labels: np.ndarray, predictions: np.ndarray) -> float:
     return np.mean(true_labels[known_mask] == predictions[known_mask])
 
 def main():
-    print('Running main')
     try:
+        # ========== Data Preparation ==========
         update_progress("Loading validation data", 10)
-        x, y = load_challenge_validation_data()
+        features, labels = load_challenge_validation_data()
 
-        update_progress("Splitting data into training and test sets", 20)
+        update_progress("Splitting data into train/test sets", 20)
         x_train, x_test, y_train, y_test = train_test_split(
-            x, y, test_size=0.2, random_state=42
+            features, labels, test_size=0.2, random_state=42
         )
 
+        # ========== Model Training ==========
         update_progress("Training SPL model", 40)
-        spl_predict_fn = spl_training(x_train, y_train)
+        spl_predictor = spl_training(x_train, y_train)
 
         update_progress("Training MPL model", 60)
-        mpl_predict_fn = mpl_training(x_train, y_train)
+        mpl_predictor = mpl_training(x_train, y_train)
 
-        for idx, predict_fn in enumerate((spl_predict_fn, mpl_predict_fn), start=1):
-            update_progress(f"Evaluating model {idx}", 80)
-            y_pred, y_score = predict_fn(x_test)
-            dummy_acc = np.equal(y_test, y_pred).sum() / len(x_test)
-            logging.info("Dummy Accuracy: %.4f", dummy_acc)
-            logging.info("AUC-ROC: %.4f", auc_roc(y_test, y_score))
-            logging.info("DIR@FAR=0.01: %.4f", dir_far(y_test, y_score, 0.01))
-            logging.info("DIR@FAR=0.10: %.4f", dir_far(y_test, y_score, 0.10))
-            logging.info("Rank-1 Accuracy: %.4f", rank1_accuracy(y_test, y_pred))
-            logging.info("--------------------------------------------------")
+        # ========== Model Evaluation ==========
+        for model_idx, (name, predictor) in enumerate(zip(
+            ["SPL", "MPL"], [spl_predictor, mpl_predictor]
+        ), start=1):
+            update_progress(f"Evaluating {name} model", 80)
+            predictions, scores = predictor(x_test)
+            
+            # Calculate metrics
+            accuracy = np.mean(y_test == predictions)
+            auc = auc_roc(y_test, scores)
+            dir_01 = dir_far(y_test, scores, 0.01)
+            dir_10 = dir_far(y_test, scores, 0.10)
+            rank1 = rank1_accuracy(y_test, predictions)
+
+            # Log results
+            logging.info(f"{name} Model Results:")
+            logging.info(" - Basic Accuracy: %.4f", accuracy)
+            logging.info(" - ROC AUC: %.4f", auc)
+            logging.info(" - DIR@FAR=0.01: %.4f", dir_01)
+            logging.info(" - DIR@FAR=0.10: %.4f", dir_10)
+            logging.info(" - Rank-1 Accuracy: %.4f", rank1)
+            logging.info("-" * 50)
 
         update_progress("Processing complete", 100)
 
     except Exception as e:
-        logging.error("An error occurred in main: %s", e)
+        logging.error("Main execution failed: %s", e)
 
         
 if __name__ == "__main__":

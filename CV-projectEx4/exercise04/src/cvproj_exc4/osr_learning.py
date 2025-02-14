@@ -199,6 +199,7 @@ def rank1_accuracy(true_labels: np.ndarray, predictions: np.ndarray) -> float:
     return np.mean(true_labels[known_mask] == predictions[known_mask])
 
 def main():
+    print('Running main')
     try:
         update_progress("Loading validation data", 10)
         x, y = load_challenge_validation_data()
@@ -229,3 +230,7 @@ def main():
 
     except Exception as e:
         logging.error("An error occurred in main: %s", e)
+
+        
+if __name__ == "__main__":
+    main()

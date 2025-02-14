@@ -1,16 +1,12 @@
 import os
 import json
-import numpy as np
-import torch
 import joblib
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from selective_search import selective_search
 from extract_train_svm import FeatureExtractorResNet50 as FeatureExtractor
-from torchvision import models, transforms
 
 class BalloonDetector:
     def __init__(self, model_path="balloon_detector_svm.pkl"):
@@ -56,7 +52,7 @@ class BalloonDetector:
             confidence = self.svm.predict_proba(features_scaled)[0][1]
             
             # Store if predicted as balloon with high confidence
-            if prediction == 1 and confidence >= 0.7:  # You can adjust this threshold
+            if prediction == 1 and confidence >= 0.80:  # subject to change - adjusted to 0.7 for now
                 detections.append({
                     'rect': [x, y, w, h],
                     'confidence': float(confidence)
@@ -78,7 +74,7 @@ class BalloonDetector:
             rect = patches.Rectangle(
                 (x, y), w, h,
                 linewidth=2,
-                edgecolor='green',
+                edgecolor='red',
                 facecolor='none'
             )
             plt.gca().add_patch(rect)
@@ -101,16 +97,21 @@ class BalloonDetector:
 
 def main():
 
+    # Workflow: 
+    # 1. Load the trained SVM model and scaler
+    # 2. Load the test set annotations to get the image list
+    # 3. Process each image in the test set
+    # 4. Detect balloons in each image using the trained SVM
+    # 5. Save the detection results to the output directory
+    
     base_path = os.path.abspath("C:/Users/taimo/Desktop/computer-vision-project/CV-projectEx5/ex5")    
     model_path = os.path.join(base_path, r"code\balloon\balloon_detector_svm.pkl")
     test_image_dir = os.path.join(base_path, "data/balloon_dataset/test")
     proposals_dir = os.path.join(base_path, "code/results/balloon_regions/test")
     output_dir = os.path.join(base_path, "code/results/balloon_regions/detection_results")
     
-    # create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Initialize detector
     detector = BalloonDetector(model_path)
     
     # Load test set annotations to get image list

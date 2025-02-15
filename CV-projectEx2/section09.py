@@ -110,7 +110,7 @@ def estimate_gamma(images, exposures):
 
 
 # def plot_gamma_curves(output_file,gamma):
-#     x = np.linspace(0, 1, 256)
+#     x = np.linspace(0, 1, 256) # this gives 256 values between 0 and 1
 #     y_gamma = np.power(x, gamma)        # forward gamma correction curve
 #     y_inverse = np.power(x, 1.0/gamma)    # inverse gamma correction curve
 
@@ -201,7 +201,7 @@ def main():
     filename_additional = [f"A45A69{i}.JPG" for i in range(23, 35)]
 
     # resizing needed to fix memory issues
-    resize_dim = (800, 600)
+    resize_dim = (3000,2250) # the ratio is 4:3, try 800:600 instead for quicker results incase of memory issues
     jpg_img_additional = load_data(path_additional, filename_additional, resize_dim=resize_dim)
     # Save the result
     output_path = r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx2\exercise_2_data\exercise_2_data\plots\additional-exercise'
@@ -218,7 +218,7 @@ def main():
     # plot_gamma_curves(gamma=gamma_estimated, output_file=os.path.join(output_path, "gamma_curves.png"))
 
 
-    linearized_img = inverse_gamma_correction(image, gamma_estimated)
+    linearized_img = inverse_gamma_correction(image, 1.0)
     white_balanced_hdr = white_balance(linearized_img)
     hdr_image = hdr_combination(white_balanced_hdr, exposure_times)
 

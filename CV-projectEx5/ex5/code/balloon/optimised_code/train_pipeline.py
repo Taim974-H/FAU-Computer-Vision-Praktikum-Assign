@@ -182,8 +182,7 @@ class BalloonDetectionPipeline:
 
     def generate_proposals(self):
         """Generate region proposals using selective search"""
-        # for dataset in ['train', 'test', 'val']:
-        for dataset in ['val']:
+        for dataset in ['train', 'test', 'val']:
             logging.info(f"Processing {dataset} proposals")
             dataset_path = self.config[f'{dataset}set']
             save_dir = Path(self.config['save_path_prp']) / dataset

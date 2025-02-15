@@ -182,8 +182,8 @@ if __name__ == "__main__":
     config = {
         'testset': r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx5\ex5\data\balloon_dataset\test",
         'testset_anno_path': r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx5\ex5\data\balloon_dataset\test\_annotations.coco.json",
-        'save_path_prp': r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx5\ex5\code\zainab-regions",
-        'model_save_path': r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx5\ex5\code\zainab-regions\models",
+        'save_path_prp': r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx5\ex5\code\baloon-regions",
+        'model_save_path': r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx5\ex5\code\balloon-regions\models",
     }
 
     # Run inference pipeline

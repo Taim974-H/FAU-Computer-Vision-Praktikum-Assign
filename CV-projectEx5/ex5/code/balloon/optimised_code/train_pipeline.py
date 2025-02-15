@@ -90,10 +90,21 @@ class FeatureExtractor:
             image = image.crop((x, y, x + w, y + h))
         
         # Transform and extract features
+        # Disables gradient computation.
+        # During inference (feature extraction), we don’t need to compute gradients because we’re not training the model.
+        # Disabling gradients reduces memory usage and speeds up computation.
+
         with torch.no_grad():
-            input_tensor = self.transform(image).unsqueeze(0)
+            input_tensor = self.transform(image).unsqueeze(0) #Applies the preprocessing steps (resizing, normalization, etc.) defined in self.transform
+            #  .unsqueeze(0) Adds a batch dimension to the tensor. PyTorch models expect inputs in the form (batch_size, channels, height, width).
+            #  Without this, the input tensor would have the shape (channels, height, width), which would cause an error.
+            
             features = self.model(input_tensor)
-            return features.squeeze().cpu().numpy()
+
+            # .squeeze(): Removes the batch dimension (if present) to return a 1D feature vector.
+            # .cpu(): Moves the tensor from GPU to CPU (if it was on the GPU).
+            # .numpy(): Converts the PyTorch tensor to a NumPy array for compatibility with other libraries (e.g., scikit-learn).
+            return features.squeeze().cpu().numpy() # Converts the output tensor into a NumPy array.
         
         
 class BalloonDetectionPipeline:

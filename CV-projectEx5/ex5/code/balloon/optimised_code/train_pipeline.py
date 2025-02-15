@@ -53,6 +53,27 @@ class FeatureExtractor:
             transforms.ToTensor(),
             transforms.Normalize(NORMALIZATION_MEAN, NORMALIZATION_STD)
         ])
+
+        self.transform = transforms.Compose([
+            transforms.RandomResizedCrop(IMAGE_SIZE),  # Helps with scale variance by cropping different parts of the image
+            transforms.RandomHorizontalFlip(p=0.5),  # Data augmentation for improving robustness to orientation changes
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # Helps generalize to different lighting conditions
+            transforms.RandomRotation(degrees=10),  # Adds rotational variance for more robust feature extraction
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),  # Introduces small translations for robustness
+            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),  # Useful for blurring variations in images
+            transforms.ToTensor(),  # Converts to tensor format for PyTorch
+            transforms.Normalize(NORMALIZATION_MEAN, NORMALIZATION_STD)  # Normalizes input to match the pretrained model’s expected input
+        ])
+
+        # Why each step is useful:
+        # RandomResizedCrop(IMAGE_SIZE) → Useful for CNNs trained from scratch; prevents over-reliance on a fixed object scale.
+        # RandomHorizontalFlip(p=0.5) → Helps if objects in the dataset don’t have a preferred left/right orientation.
+        # ColorJitter(...) → Helps CNNs trained from scratch or for transfer learning on datasets with varying lighting.
+        # RandomRotation(degrees=10) → Useful if objects in the dataset can be rotated slightly, common in real-world datasets.
+        # RandomAffine(...) → Helps generalization in CNNs by simulating small translations.
+        # GaussianBlur(...) → Useful in real-world images where noise or blur is present.
+        # Normalize(...) → Always required for transfer learning with a pretrained model.
+
         
     def _initialize_model(self, model_name: str) -> torch.nn.Module:
         """Initialize pretrained model with last layer removed."""

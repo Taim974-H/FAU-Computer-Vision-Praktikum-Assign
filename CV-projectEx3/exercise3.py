@@ -2,13 +2,10 @@ import os
 import shlex
 import argparse
 from tqdm import tqdm
-
-# for python3: read in python2 pickled files
 import pickle as cPickle
 import multiprocessing
-
-
 import gzip
+from concurrent.futures import ProcessPoolExecutor
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.svm import LinearSVC
 from sklearn.linear_model import Ridge
@@ -16,6 +13,8 @@ from sklearn.preprocessing import normalize
 import numpy as np
 import cv2
 from parmap import parmap
+from sklearn.decomposition import PCA
+from functools import partial
 
 def parseArgs(parser):
     parser.add_argument('--labels_test', 
@@ -39,6 +38,14 @@ def parseArgs(parser):
                         help='regularization parameter of GMP')
     parser.add_argument('--C', default=1000, type=float, 
                         help='C parameter of the SVM')
+    parser.add_argument('--compute-esvm', action='store_true',
+                      help='Compute E-SVM (even with GMP)')
+    parser.add_argument('--custom-descs', action='store_true',
+                    help='Use custom SIFT descriptors')
+    parser.add_argument('--multi-vlad', action='store_true',
+                        help='Use multi-VLAD with PCA')
+    parser.add_argument('--n-codebooks', type=int, default=5,
+                        help='Number of codebooks for multi-VLAD')
     return parser
 
 def getFiles(folder, pattern, labelfile):
@@ -67,7 +74,7 @@ def getFiles(folder, pattern, labelfile):
         # strip all known endings, note: os.path.splitext() doesnt work for
         # '.' in the filenames, so let's do it this way...
         for p in ['.pkl.gz', '.txt', '.png', '.jpg', '.tif', '.ocvmb','.csv']:
-            if file_name.endswith(p):
+            if str(file_name).endswith(p):
                 file_name = file_name.replace(p,'')
 
         # get now new file name
@@ -77,34 +84,44 @@ def getFiles(folder, pattern, labelfile):
 
     return all_files, labels
 
+
+
 def loadRandomDescriptors(files, max_descriptors):
-    """ 
-    load roughly `max_descriptors` random descriptors
-    parameters:
-        files: list of filenames containing local features of dimension D
-        max_descriptors: maximum number of descriptors (Q)
-    returns: QxD matrix of descriptors
-    """
     # let's just take 100 files to speed-up the process
     max_files = 100
     indices = np.random.permutation(max_files)
-    files = np.array(files)[indices]
+    selected_files = np.random.choice(files, min(len(files), max_files), replace=False)
    
     # rough number of descriptors per file that we have to load
     max_descs_per_file = int(max_descriptors / len(files))
 
     descriptors = []
-    for i in tqdm(range(len(files))):
-        with gzip.open(files[i], 'rb') as ff:
-            desc = cPickle.load(ff, encoding='latin1')
+
+    for file_path in tqdm(selected_files, desc='Loading descriptors'):
+        try:
+            # handling both image files and pre-computed descriptors
+            if str(file_path).endswith(('.png', '.jpg', '.jpeg')):
+                desc = computeDescs(file_path)
+            else:
+                with gzip.open(file_path, 'rb') as f:
+                    desc = cPickle.load(f, encoding='latin1')
             
-        # get some random ones
-        indices = np.random.choice(len(desc),
-                                   min(len(desc),
-                                       int(max_descs_per_file)),
-                                   replace=False)
-        desc = desc[ indices ]
-        descriptors.append(desc)
+            if desc is None or len(desc) == 0:
+                print(f"Warning: No descriptors found in {file_path}")
+                continue
+                
+            if len(desc) > max_descs_per_file:
+                indices = np.random.choice(len(desc), max_descs_per_file, replace=False)
+                desc = desc[indices]
+                
+            descriptors.append(desc)
+            
+        except Exception as e:
+            print(f"Error processing {file_path}: {str(e)}")
+            continue
+
+    if not descriptors:
+        raise ValueError("No valid descriptors found in any files!")
     
     descriptors = np.concatenate(descriptors, axis=0)
     return descriptors
@@ -151,35 +168,39 @@ def assignments(descriptors, clusters):
     return assignment
 
 
-def vlad(files, mus, powernorm, gmp=False, gamma=1000):
-    """
-    compute VLAD encoding for each files
-    parameters: 
-        files: list of N files containing each T local descriptors of dimension
-        D
-        mus: KxD matrix of cluster centers
-        gmp: if set to True use generalized max pooling instead of sum pooling
-    returns: NxK*D matrix of encodings
-    """
+def vlad(files, mus, powernorm, gmp=False, gamma=1):
     K = mus.shape[0] # number of clusters
     encodings = [] # list of encodingsa
-
+    
     for f in tqdm(files):
-        with gzip.open(f, 'rb') as ff:
-            desc = cPickle.load(ff, encoding='latin1')
-
-        a = assignments(desc, mus) # a: TxK
+        if f.endswith(('.png', '.jpg', '.jpeg', '.tiff')): # two different icdar17 datasets, png -> binary images and jpg -> color images. Our test/train labels are of the binary images
+            desc = computeDescs(f)
+        else:
+            with gzip.open(f, 'rb') as ff:
+                desc = cPickle.load(ff, encoding='latin1')
         
-        T,D = desc.shape
-        f_enc = np.zeros((K, D), dtype=np.float32) 
-        for k in range(mus.shape[0]):
-            j = np.where(a[:, k] == 1)[0]
-            if len(j) > 0:  # Ensure there are descriptors assigned
-                residuals = desc[j] - mus[k]  # Compute residuals for cluster k, 
-                # residuals mean the difference between the descriptor and the cluster center
-                f_enc[k, :] = np.sum(residuals, axis=0)  # Aggregate residuals
-                
-        f_enc = f_enc.flatten()
+        if desc is None or len(desc) == 0:
+            f_enc = np.zeros(K * mus.shape[1], dtype=np.float32)
+        else:
+            a = assignments(desc, mus) # a: TxK
+        
+            T,D = desc.shape
+            f_enc = np.zeros((K, D), dtype=np.float32) 
+            for k in range(K):
+                j = np.where(a[:, k] == 1)[0]
+                if len(j) > 0:  # Ensure there are descriptors assigned
+                    residuals = desc[j] - mus[k]  # Compute residuals for cluster k, 
+                    # residuals mean the difference between the descriptor and the cluster center
+                    if gmp: 
+                        # max pooling
+                        clf = Ridge(alpha=gamma, solver='sparse_cg', 
+                                  fit_intercept=False, max_iter=500)
+                        clf.fit(residuals, np.ones(len(residuals)))
+                        f_enc[k, :] = clf.coef_  # GMP residuals
+                    else:
+                        f_enc[k, :] = np.sum(residuals, axis=0)  # Aggregate residuals
+            
+            f_enc = f_enc.flatten()
 
         if powernorm:
             f_enc = np.sign(f_enc) * np.sqrt(np.abs(f_enc))  # Power normalization
@@ -276,109 +297,210 @@ def evaluate(encs, labels):
         avg_precision = np.mean(precisions)
         mAP.append(avg_precision)
     mAP = np.mean(mAP)
+    top1 = float(correct) / n_encs
 
-    print('Top-1 accuracy: {} - mAP: {}'.format(float(correct) / n_encs, mAP))
+    print('Top-1 accuracy: {} - mAP: {}'.format(top1, mAP))
+    return top1, mAP
+
+
+def computeDescs(fileName: str) -> np.ndarray:
+    # print(f"Processing image: {fileName}")
+    img = cv2.imread(fileName, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        print(f"Warning: Could not read image {fileName}") # error handling (was needed because got confused between the two icdar17 datasets)
+        return np.array([])
+    
+    # using opencv sift
+    sift = cv2.SIFT_create()
+    keypoints = sift.detect(img, None)
+
+    for kp in keypoints:
+        kp.angle = 0
+    
+    keypoints, descriptors = sift.compute(img, keypoints)
+    if descriptors is None:
+        return np.array([])
+    
+    if descriptors.shape[1] == 128:
+        descriptors = descriptors[:, ::2]
+    
+    l1_norms = np.linalg.norm(descriptors, ord=1, axis=1, keepdims=True)
+    l1_norms[l1_norms == 0] = 1  # avoid division by zero
+    descriptors = descriptors / l1_norms
+    descriptors = np.sign(descriptors) * np.sqrt(np.abs(descriptors))
+    
+    if descriptors is None or len(descriptors) == 0:
+        print(f"Warning: No descriptors found in {fileName}")
+        return np.array([])
+
+    # if descriptors is not None and len(descriptors) > 0:
+    #     save_path = fileName.replace('.png', '_SIFT_custom.pkl.gz')
+    #     with gzip.open(save_path, 'wb') as f:
+    #         cPickle.dump(descriptors, f)
+    
+    return descriptors
+
+def multivlad(files, all_mus, powernorm, gmp=False, gamma=1):
+    encodings = []
+    for mus in all_mus: # for each codebook
+        # VLAD encodings
+        vlad_enc = vlad(files, mus, powernorm, gmp, gamma)
+        encodings.append(vlad_enc)
+    
+    return np.hstack(encodings)
+
 
 #------------------------------------------------------------------------------------------------
 def main():
-    # parser = argparse.ArgumentParser('retrieval')
-    # parser = parseArgs(parser)
-    # args = parser.parse_args()
-    # Hardcoded arguments
-    args = argparse.Namespace(
-        in_train=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features\train',
-        labels_train=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features\icdar17_labels_train.txt',
-        suffix='_SIFT_patch_pr.pkl.gz',
-        overwrite=False,
-        powernorm=False,
-        gmp=False,
-        gamma=1,
-        C=1000
+    # ======================== Argument Parsing ========================
+    parser = argparse.ArgumentParser('retrieval')
+    parser.add_argument('--use-images', action='store_true',
+                      help='Use original images instead of pre-computed descriptors')
+    parser.add_argument('--output-dir', type=str,
+                      default=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\outputs',
+                      help='Base output directory')
+    parser.add_argument('--evaluate-all', action='store_true',
+                      help='Run all possible combinations of methods')
+    parser = parseArgs(parser)
+    args = parser.parse_args()
 
-    )
-
-    np.random.seed(42) # fix random seed
-   
-    # a) dictionary
-    files_train, labels_train = getFiles(args.in_train, args.suffix,
-                                         args.labels_train)
-    print('#train: {}'.format(len(files_train)))
-    if not os.path.exists('mus.pkl.gz'):
-        # TODO
-        descriptors = loadRandomDescriptors(files_train, max_descriptors=500000)
-        print(descriptors.shape) # 470776x64
-        print('> loaded {} descriptors:'.format(len(descriptors)))
-
-        # cluster centers
-        print('> compute dictionary')
-        # TODO
-        mus = dictionary(descriptors, n_clusters=100)
-        with gzip.open('mus.pkl.gz', 'wb') as fOut:
-            cPickle.dump(mus, fOut, -1)
-            print("mus is created")
+    # ======================== Path Configuration =======================
+    # Base data paths remain the same
+    local_feat_path = r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features'
+    original_images_path_test = r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\ScriptNet-HistoricalWI-2017-binarized"
+    original_images_path_train = r"C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17-historicalwi-training-binarized\icdar2017-training-binary"
+    if args.use_images:
+        args.in_train = original_images_path_train
+        args.in_test = original_images_path_test
+        args.suffix_train = '.png'
+        args.suffix_test = '.jpg'
     else:
-        with gzip.open('mus.pkl.gz', 'rb') as f:
+        args.in_train = os.path.join(local_feat_path, 'train')
+        args.in_test = os.path.join(local_feat_path, 'test')
+
+    args.labels_train = os.path.join(local_feat_path, 'icdar17_labels_train.txt')
+    args.labels_test = os.path.join(local_feat_path, 'icdar17_labels_test.txt')
+
+    # Validate paths and create directories
+    for path in [args.labels_train, args.labels_test]:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File not found: {path}")
+
+    dirs = {
+        'output': args.output_dir,
+        'codebook': os.path.join(args.output_dir, 'codebooks'),
+        'encoding': os.path.join(args.output_dir, 'encodings'),
+        'results': os.path.join(args.output_dir, 'results')
+    }
+    for dir_path in dirs.values():
+        os.makedirs(dir_path, exist_ok=True)
+
+    # ======================== Data Loading ============================
+    print("Loading data files...")
+    files_train, labels_train = getFiles(args.in_train, args.suffix_train, args.labels_train)
+    files_test, labels_test = getFiles(args.in_test, args.suffix_test, args.labels_test)
+    print(f'Loaded {len(files_train)} training and {len(files_test)} test files')
+
+    # ====================== Task Execution ===========================
+    results = {}  # Store all evaluation results
+
+    # Basic Codebook Generation
+    print("\n=== Task A: Basic Codebook Generation ===")
+    single_codebook_path = os.path.join(dirs['codebook'], 'single_codebook.pkl.gz')
+    if not os.path.exists(single_codebook_path) or args.overwrite:
+        print("Generating single codebook...")
+        descriptors = loadRandomDescriptors(files_train, 500000)
+        mus = dictionary(descriptors, 100)
+        with gzip.open(single_codebook_path, 'wb') as f:
+            cPickle.dump(mus, f)
+    else:
+        with gzip.open(single_codebook_path, 'rb') as f:
             mus = cPickle.load(f)
-            print("dictionary is already in folder")
 
-    print(mus.shape)
+    # Basic VLAD
+    print("\n=== Task B: Basic VLAD Encoding ===")
+    enc_train_basic = vlad(files_train, mus, powernorm=False, gmp=False)
+    enc_test_basic = vlad(files_test, mus, powernorm=False, gmp=False)
+    results['basic_vlad'] = evaluate(enc_test_basic, labels_test)
 
-#------------------------------------------------------------------------------------------------
-    parameters = argparse.Namespace(
-        in_test=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features\test',
-        labels_test=r'C:\Users\taimo\Desktop\computer-vision-project\CV-projectEx3\data\icdar17_local_features\icdar17_local_features\icdar17_labels_test.txt',
-        suffix='_SIFT_patch_pr.pkl.gz',
-        overwrite=False,
-        powernorm=False,
-        gmp=False,
-        gamma=1,
-        C=1000
-    )
+    # VLAD with Power Normalization
+    print("\n=== Task C: VLAD with Power Normalization ===")
+    enc_train_power = vlad(files_train, mus, powernorm=True, gmp=False)
+    enc_test_power = vlad(files_test, mus, powernorm=True, gmp=False)
+    results['power_norm_vlad'] = evaluate(enc_test_power, labels_test)
 
-        # b) VLAD encoding
-    print('> compute VLAD for test')
-    files_test, labels_test = getFiles(parameters.in_test, parameters.suffix,
-                                       parameters.labels_test)
-    print('#test: {}'.format(len(files_test)))
-    fname = 'enc_test_gmp{}.pkl.gz'.format(parameters.gamma) if parameters.gmp else 'enc_test.pkl.gz'
-    if not os.path.exists(fname) or parameters.overwrite:
-        # TODO
-        enc_test = vlad(files_test, mus, parameters.powernorm, parameters.gmp, parameters.gamma)
-        with gzip.open(fname, 'wb') as fOut:
-            cPickle.dump(enc_test, fOut, -1)
-    else:
-        with gzip.open(fname, 'rb') as f:
-            enc_test = cPickle.load(f)
-   
-    # cross-evaluate test encodings
-    print('> evaluate')
-    evaluate(enc_test, labels_test)
+    # Exemplar Classification
+    print("\n=== Task D: Exemplar Classification ===")
+    enc_test_esvm = esvm(enc_test_power, enc_train_power, C=1000)
+    results['esvm'] = evaluate(enc_test_esvm, labels_test)
 
-    # descriptors = loadRandomDescriptors(files_train, max_descriptors=500000)
-    # a = assignments(descriptors, mus)
-    # print(a)
-    
-    # d) compute exemplar svms
-    print('> compute VLAD for train (for E-SVM)')
-    fname = 'enc_train_gmp{}.pkl.gz'.format(parameters.gamma) if parameters.gmp else 'enc_train.pkl.gz'
-    if not os.path.exists(fname) or args.overwrite:
-        # TODO
-        enc_train = vlad(files_train, mus, parameters.powernorm, parameters.gmp, parameters.gamma)
-        with gzip.open(fname, 'wb') as fOut:
-            cPickle.dump(enc_train, fOut, -1)
-    else:
-        with gzip.open(fname, 'rb') as f:
-            enc_train = cPickle.load(f)
+    if args.evaluate_all:
 
-    print('> esvm computation')
-    # TODO
-    enc_test = esvm(enc_test, enc_train, C=parameters.C)
+        # SIFT features
+        if args.use_images:
+            print("\n=== Task E: Custom SIFT Features ===")
+            results['custom_sift'] = results['power_norm_vlad']
 
-    # eval
-    print('> evaluate')
-    evaluate(enc_test, labels_test)
-    
+        # =Task F: GMP
+        print("\n=== Generalized Max Pooling ===")
+        for gamma in [0.5]: #, 1, 2, 5, 10]:
+            print(f"\nTesting GMP with gamma={gamma}")
 
+            print("without E-SVM")
+            # Without E-SVM
+            enc_train_gmp = vlad(files_train, mus, powernorm=True, gmp=True, gamma=gamma)
+            enc_test_gmp = vlad(files_test, mus, powernorm=True, gmp=True, gamma=gamma)
+            results[f'gmp_gamma_{gamma}'] = evaluate(enc_test_gmp, labels_test)
+
+            print("with E-SVM")
+            # With E-SVM
+            enc_test_gmp_esvm = esvm(enc_test_gmp, enc_train_gmp, C=1000)
+            results[f'gmp_esvm_gamma_{gamma}'] = evaluate(enc_test_gmp_esvm, labels_test)
+
+        # Task G: Multi-VLAD with PCA
+        print("\n=== Multi-VLAD with PCA ===")
+        # Generate multiple codebooks
+        multi_codebooks = []
+        for seed in range(5):
+            descriptors = loadRandomDescriptors(files_train, 500000)
+            kmeans = MiniBatchKMeans(n_clusters=32, random_state=seed)
+            kmeans.fit(descriptors)
+            multi_codebooks.append(kmeans.cluster_centers_)
+
+        # Compute concatenated VLAD encodings
+        enc_train_multi = multivlad(files_train, multi_codebooks, powernorm=True)
+        
+        # Apply PCA
+        pca = PCA(n_components=1000, whiten=True)
+        enc_train_multi = pca.fit_transform(enc_train_multi)
+        
+        # Transform test encodings
+        enc_test_multi = multivlad(files_test, multi_codebooks, powernorm=True)
+        enc_test_multi = pca.transform(enc_test_multi)
+        
+        results['multi_vlad_pca'] = evaluate(enc_test_multi, labels_test)
+
+        # Multi-VLAD + E-SVM
+        enc_test_multi_esvm = esvm(enc_test_multi, enc_train_multi, C=1000)
+        results['multi_vlad_pca_esvm'] = evaluate(enc_test_multi_esvm, labels_test)
+
+    # ====================== Results Summary ==========================
+    print("\n=== Final Results Summary ===")
+    print("\nMethod\t\t\t\tTop-1 Accuracy\tmAP")
+    print("-" * 50)
+    for method, (acc, map_score) in results.items():
+        print(f"{method:<30}\t{acc:.4f}\t{map_score:.4f}")
+
+    # Save results
+    results_path = os.path.join(dirs['results'], 'evaluation_results.pkl.gz')
+    with gzip.open(results_path, 'wb') as f:
+        cPickle.dump(results, f)
+    print(f"\nResults saved to {results_path}")
 
 if __name__ == '__main__':
     main()
+
+
+# python exercise3.py --evaluate_all --overwrite
+# python exercise3.py --use-images --evaluate-all --overwrite
+# python exercise3.py 

@@ -14,6 +14,7 @@ from sklearn.svm import SVC, LinearSVC
 from sklearn.kernel_approximation import Nystroem
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.mixture import GaussianMixture
+from sklearn.cluster import DBSCAN
 from sklearn.neighbors import KNeighborsClassifier
 
 logging.basicConfig(
@@ -55,6 +56,7 @@ def spl_training(
         best_base_clf = grid_search.best_estimator_
 
         # Calibrate classifier using cv="prefit" - prefit means that the classifier is already trained and we are just calibrating it
+        # we use isotonic regression as it is more suitable for binary classification
         clf = CalibratedClassifierCV(estimator=best_base_clf, method='isotonic', cv="prefit")
         clf.fit(x_train_processed, new_y_train)
 
@@ -92,10 +94,12 @@ def mpl_training(
         max_known = int(np.max(y_train[known_mask])) if np.any(known_mask) else 0
         new_y_train = np.copy(y_train)
         unknown_mask = (y_train == -1)
+        
+        # If there are unknown samples, cluster them using GMM and assign new labels
         if np.sum(unknown_mask) > 0:
             x_unknown = x_train_scaled[unknown_mask]
             best_gmm = None
-            best_bic = np.inf
+            best_bic = np.inf # bio = Bayesian Information Criterion (lower is better)
             for n_components in [2, 3, 5, 7, 11]:
                 gmm = GaussianMixture(n_components=n_components, random_state=42)
                 gmm.fit(x_unknown)
@@ -106,6 +110,29 @@ def mpl_training(
             cluster_labels = best_gmm.predict(x_unknown)
             new_unknown_labels = max_known + 1 + cluster_labels
             new_y_train[unknown_mask] = new_unknown_labels
+            
+        # if np.sum(unknown_mask) > 0:
+        #     x_unknown = x_train_scaled[unknown_mask]
+            
+        #     # Try multiple eps values for DBSCAN
+        #     best_n_clusters = 0
+        #     best_labels = None
+            
+        #     for eps in [0.1, 0.2, 0.3, 0.5]:
+        #         dbscan = DBSCAN(eps=eps, min_samples=max(2, int(0.05 * len(x_unknown))))
+        #         labels = dbscan.fit_predict(x_unknown)
+        #         n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+                
+        #         if n_clusters > best_n_clusters:
+        #             best_n_clusters = n_clusters
+        #             best_labels = labels
+            
+        #     # Remap cluster labels to new pseudo-classes
+        #     if best_labels is not None and best_n_clusters > 0:
+        #         cluster_labels = best_labels
+        #         new_unknown_labels = max_known + 1 + cluster_labels
+        #         new_unknown_labels[cluster_labels == -1] = -1  # Keep noise points as unknown
+        #         new_y_train[unknown_mask] = new_unknown_labels
 
         # Tune a KNN classifier using GridSearchCV.
         knn = KNeighborsClassifier(weights='distance')
@@ -121,6 +148,9 @@ def mpl_training(
 
         # Set adaptive thresholds for each class.
         thresholds = {}
+        # confidence_thresholds = {}
+        # confidence_threshold = 0.5
+        
         # Define percentiles: for known classes, higher percentile (more tolerant),
         # and for unknown classes, lower percentile to trigger unknown classification more readily
         known_percentile = 95
@@ -131,8 +161,10 @@ def mpl_training(
                 distances, _ = best_knn.kneighbors(class_samples)
                 if label <= max_known:
                     thresholds[label] = np.percentile(distances, known_percentile)
+                    # confidence_thresholds[label] = confidence_threshold
                 else:
                     thresholds[label] = np.percentile(distances, unknown_percentile)
+                    # confidence_thresholds[label] = confidence_threshold
 
         # Global threshold for unknowns
         unknown_class_samples = x_train_scaled[new_y_train > max_known]
@@ -163,11 +195,13 @@ def mpl_training(
                     confidence = 1.0
                 
                 # applying distance threshold to detect unknowns
+                # if avg_distance > threshold or confidence < confidence_threshold:
                 if avg_distance > threshold:
                     predictions[i] = -1
                     confidence = max(0, confidence)  # ensure non-negative scores
                 
                 confidence_scores[i] = confidence
+                
                 
             return predictions, confidence_scores
 
